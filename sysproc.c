@@ -67,8 +67,13 @@ sys_sbrk(void)
   // records the new size; frames arrive on demand in trap.c's T_PGFLT
   // handler. Shrinking still frees the pages that were really allocated
   // (growproc's deallocuvm skips not-yet-backed lazy pages), per A8 Q4(a).
-  if(n < 0)
+  if(n < 0){
+    if((0U - (uint)n) > myproc()->sz - myproc()->heap_start)
+      return -1;               // never shrink below the code/guard region
     return growproc(n) < 0 ? -1 : addr;
+  }
+  if((uint)n >= KERNBASE - myproc()->sz)
+    return -1;                 // keep the user space below KERNBASE
   myproc()->sz += n;
   return addr;
 #else

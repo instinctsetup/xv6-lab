@@ -95,7 +95,7 @@ trap(struct trapframe *tf)
       if(p == 0)
         goto lazy_fail;
       va = rcr2();
-      if(va >= p->sz || uvmpresent(p->pgdir, va))
+      if(va < p->heap_start || va >= p->sz || uvmpresent(p->pgdir, va))
         goto lazy_fail;              // outside the recorded heap: real fault
       mem = kalloc();
       if(mem == 0){

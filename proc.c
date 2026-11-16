@@ -117,6 +117,7 @@ found:
   p->last_run = 0;
   p->rtime = 0;
   p->queue_level = 0;                  // A4 Q3: new work enters the top queue
+  p->heap_start = 0;                   // A8 Q4: set by exec; 0 = nothing lazy yet
   p->qticks = 0;
   p->is_thread = 0;                    // A7 Q1
   p->leader = p;                       // a normal process leads its own group
@@ -223,6 +224,7 @@ fork(void)
     return -1;
   }
   np->sz = curproc->sz;
+  np->heap_start = curproc->heap_start; // A8 Q4: inherit lazy heap base
   np->parent = curproc;
   *np->tf = *curproc->tf;
 
@@ -299,6 +301,21 @@ exit(void)
       if(p->state == SLEEPING)
         p->state = RUNNABLE;
     }
+  }
+
+  // Reap all group threads before the leader's parent may free this pgdir.
+  // Killed sleeping threads are made runnable above and exit on trap return.
+  while(curproc->nthreads > 0){
+    int reaped = 0;
+    for(p = ptable.proc; p < &ptable.proc[NPROC]; p++){
+      if(p->is_thread && p->leader == curproc && p->state == ZOMBIE){
+        kfree(p->kstack); p->kstack = 0; p->pid = 0; p->parent = 0;
+        p->state = UNUSED; p->is_thread = 0; p->leader = p;
+        curproc->nthreads--; reaped = 1;
+      }
+    }
+    if(curproc->nthreads > 0 && !reaped)
+      sleep(curproc, &ptable.lock);
   }
 
   // Parent might be sleeping in wait().
@@ -392,6 +409,10 @@ effective_priority(struct proc *p)
     pr--;
   return pr;
 }
+
+// Monotonic dispatch counter: gives true round-robin tie-breaks even when
+// several processes block within the same timer tick (ticks alone would tie).
+static uint dispatch_sequence;
 
 static uint
 key(struct proc *p)
@@ -546,7 +567,7 @@ scheduler(void)
       c->proc = p;
       switchuvm(p);
       p->state = RUNNING;
-      p->last_run = ticks;      // consolidated build: RR tie-break
+      p->last_run = ++dispatch_sequence; // RR tie-break (monotonic)
 
       swtch(&(c->scheduler), p->context);
       switchkvm();
@@ -643,7 +664,8 @@ clone(void (*fcn)(void*), void *arg, void *stack)
     return -1;
   // The kernel writes the fake frame on the user stack below; reject a
   // stack outside the address space instead of faulting in kernel mode.
-  if((uint)stack + PGSIZE > curproc->sz)
+  if((uint)stack > curproc->sz || curproc->sz - (uint)stack < PGSIZE ||
+     (uint)fcn >= curproc->sz)
     return -1;
 
   if((np = allocproc()) == 0)
@@ -652,6 +674,7 @@ clone(void (*fcn)(void*), void *arg, void *stack)
   // Share the caller's page table instead of copyuvm().
   np->pgdir = curproc->pgdir;
   np->sz = curproc->sz;
+  np->heap_start = curproc->heap_start; // A8 Q4: inherit lazy heap base
   np->parent = curproc;
   *np->tf = *curproc->tf;
 
@@ -754,6 +777,7 @@ sleep(void *chan, struct spinlock *lk)
   }
   // Go to sleep.
   p->chan = chan;
+  p->qticks = 0;            // A4 Q3: voluntary blocking ends this slice
   p->state = SLEEPING;
 
   sched();

@@ -57,6 +57,7 @@ struct proc {
   int remaining_time;          // A4 Q1 (SRTF): remaining estimated burst
   int priority;                // A3 Q2/A7 Q4: 1 = highest .. 20 = lowest
   uint ready_since;            // aging + HRRN: tick when last became RUNNABLE
+  uint heap_start;             // A8 Q4 (lazy): lowest valid lazy heap address
   uint last_run;               // RR tie-break: tick of last dispatch
   uint rtime;                  // total run ticks, charged by scheduler()
   int queue_level;             // A4 Q3 (MLFQ): current queue, 0 = top
