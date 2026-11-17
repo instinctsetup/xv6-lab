@@ -1,0 +1,27 @@
+xv6 OS LAB - ASSIGNMENT 5, A5 Q2: Producer-consumer (bounded buffer)
+================================================================
+
+WHAT THE QUESTION ASKS
+----------------------
+One producer and one consumer over a size-5 circular buffer in shared memory, using counting semaphores empty and full plus a mutex. Producer blocks when full, consumer blocks when empty, no item lost or reordered.
+
+HOW TO BUILD AND RUN
+--------------------
+Build and boot:   make qemu CPUS=1
+At the xv6 shell: prodcons
+
+WHICH FILES TO OPEN / SHOW
+--------------------------
+support/sem.c (kernel semaphores), support/shm.c, prodcons.c
+
+EXPECTED OUTPUT
+---------------
+Items 1 to 100 consumed in order; blocking and unblocking visible in the log.
+
+IN THE LAB: WHAT TO DO AND WHAT TO SHOW
+---------------------------------------
+Trace one produce and one consume through sem_wait/sem_signal in sem.c. Run prodcons, screenshot the in-order log.
+
+HOW IT IS IMPLEMENTED
+---------------------
+First build kernel semaphores: sem_init/sem_wait/sem_signal syscalls over sleep()/wakeup(), wired like any syscall. Then the buffer logic: empty starts at 5, full at 0, mutex at 1; producer waits on empty then mutex, consumer waits on full then mutex.

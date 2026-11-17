@@ -1,0 +1,27 @@
+xv6 OS LAB - ASSIGNMENT 3, A3 Q1: FCFS scheduler
+================================================================
+
+WHAT THE QUESTION ASKS
+----------------------
+Replace the round-robin scheduler with non-preemptive first-come-first-served: a ctime field set from ticks in allocproc(), and a scheduler that always picks the RUNNABLE process with the smallest ctime and lets it finish.
+
+HOW TO BUILD AND RUN
+--------------------
+Build and boot:   make clean && make SCHED=FCFS qemu CPUS=1
+At the xv6 shell: fcfstest
+
+WHICH FILES TO OPEN / SHOW
+--------------------------
+proc.c (key() and pick()), proc.h (ctime), trap.c (no timer yield under FCFS)
+
+EXPECTED OUTPUT
+---------------
+Three staggered children finish strictly in creation order: child 0, then 1, then 2 (verified).
+
+IN THE LAB: WHAT TO DO AND WHAT TO SHOW
+---------------------------------------
+Read key() in proc.c and see why sched_charge() returns 0 for FCFS (never preempted). Run fcfstest, screenshot the completion order.
+
+HOW IT IS IMPLEMENTED
+---------------------
+Add ctime to struct proc in proc.h and set it from ticks in allocproc(). In the scheduler loop, scan for the RUNNABLE process with the smallest ctime instead of taking the next in round-robin order, and never yield on a timer tick, so the chosen process runs to completion.

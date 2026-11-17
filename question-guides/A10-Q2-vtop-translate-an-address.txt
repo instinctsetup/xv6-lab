@@ -1,0 +1,27 @@
+xv6 OS LAB - ASSIGNMENT 10, A10 Q2: vtop: translate an address
+================================================================
+
+WHAT THE QUESTION ASKS
+----------------------
+A vtop() syscall taking a virtual address, finding its PTE with walkpgdir(), and returning frame address plus offset; invalid or unmapped addresses must be reported, not crash.
+
+HOW TO BUILD AND RUN
+--------------------
+Build and boot:   make qemu CPUS=1
+At the xv6 shell: vttest
+
+WHICH FILES TO OPEN / SHOW
+--------------------------
+vm.c (vtop), sysproc.c
+
+EXPECTED OUTPUT
+---------------
+Valid addresses return physical addresses; an unmapped address is reported cleanly.
+
+IN THE LAB: WHAT TO DO AND WHAT TO SHOW
+---------------------------------------
+Compare with A8 Q1: same walk, quieter output. Run vttest, screenshot valid and invalid cases.
+
+HOW IT IS IMPLEMENTED
+---------------------
+vtop(): the same walkpgdir lookup as va2pa without the printing - check the PTE exists and is present, then return PTE_ADDR(*pte) combined with the page offset; report invalid or unmapped addresses cleanly.

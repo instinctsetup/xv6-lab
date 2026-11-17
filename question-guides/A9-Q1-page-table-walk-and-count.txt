@@ -1,0 +1,27 @@
+xv6 OS LAB - ASSIGNMENT 9, A9 Q1: Page table walk and count
+================================================================
+
+WHAT THE QUESTION ASKS
+----------------------
+vmprint() again, this sheet's variant: print every valid user page (VA, frame, P/W/U), ignore the kernel half, and end with the count of user pages and page-table pages.
+
+HOW TO BUILD AND RUN
+--------------------
+Build and boot:   make qemu CPUS=1
+At the xv6 shell: pttest
+
+WHICH FILES TO OPEN / SHOW
+--------------------------
+vm.c (shared vmprint with A8 Q3)
+
+EXPECTED OUTPUT
+---------------
+Exactly four new pages appear after sbrk(4 * 4096), with the totals printed (verified in the combined tree).
+
+IN THE LAB: WHAT TO DO AND WHAT TO SHOW
+---------------------------------------
+Same walk as A8 Q3 with a different summary; run pttest and screenshot before and after the sbrk.
+
+HOW IT IS IMPLEMENTED
+---------------------
+Reuse the A8 Q3 walk and add the summary this sheet wants: count the valid user pages and the page-table pages as you go, print both totals at the end, and ignore everything at or above KERNBASE.

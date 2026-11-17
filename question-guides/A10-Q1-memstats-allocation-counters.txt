@@ -1,0 +1,27 @@
+xv6 OS LAB - ASSIGNMENT 10, A10 Q1: memstats: allocation counters
+================================================================
+
+WHAT THE QUESTION ASKS
+----------------------
+Count total allocated and freed pages inside kalloc()/kfree(), and a memstats() syscall printing total allocated, total freed, currently allocated, and available physical pages.
+
+HOW TO BUILD AND RUN
+--------------------
+Build and boot:   make qemu CPUS=1
+At the xv6 shell: memtest
+
+WHICH FILES TO OPEN / SHOW
+--------------------------
+kalloc.c (kpage_allocs/kpage_frees counters, skipped during boot init), sysproc.c (memstats)
+
+EXPECTED OUTPUT
+---------------
+Counters rise by 10 after sbrk of 10 pages and the freed count catches up after release (verified: 1118/907/211, then 1128/917/211).
+
+IN THE LAB: WHAT TO DO AND WHAT TO SHOW
+---------------------------------------
+Note why the counters only count when kmem.use_lock is set (boot frees must not count). Run memtest, screenshot both stats blocks.
+
+HOW IT IS IMPLEMENTED
+---------------------
+Two counters in kalloc.c: kpage_allocs++ in kalloc() and kpage_frees++ in kfree(), but only once kmem.use_lock is set, so the boot-time page freeing is not counted. memstats() prints both, their difference, and the free-list length.

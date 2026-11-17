@@ -1,0 +1,27 @@
+xv6 OS LAB - ASSIGNMENT 9, A9 Q3: Page replacement: FIFO and LRU
+================================================================
+
+WHAT THE QUESTION ASKS
+----------------------
+A user-space simulator: given a frame count and reference string, print frames and hit/fault per reference. On the standard string 7 0 1 2 0 3 0 4 2 3 0 3 2 1 2 0 1 7 0 1 with 3 frames, expect 15 faults for FIFO and 12 for LRU, then a 3/4/5-frame table.
+
+HOW TO BUILD AND RUN
+--------------------
+Build and boot:   make qemu CPUS=1
+At the xv6 shell: pagerepl
+
+WHICH FILES TO OPEN / SHOW
+--------------------------
+pagerepl.c (user space only)
+
+EXPECTED OUTPUT
+---------------
+FIFO 15 faults, LRU 12 faults on the standard string; the frame-count table prints with hit ratios.
+
+IN THE LAB: WHAT TO DO AND WHAT TO SHOW
+---------------------------------------
+Verify one algorithm by hand on the first few references before trusting the table. Screenshot the comparison.
+
+HOW IT IS IMPLEMENTED
+---------------------
+All in user space: a frames array per algorithm. FIFO evicts the page loaded longest ago; LRU evicts the one whose last use is furthest back. Print the frame contents and hit/fault per reference, then total the faults.

@@ -1,0 +1,27 @@
+xv6 OS LAB - ASSIGNMENT 5, A5 Q1: Peterson's algorithm
+================================================================
+
+WHAT THE QUESTION ASKS
+----------------------
+Mutual exclusion between parent and child using only flag[] and turn in shared memory, no OS locks for the critical section itself. The shared counter must be exact at the end.
+
+HOW TO BUILD AND RUN
+--------------------
+Build and boot:   make qemu CPUS=1
+At the xv6 shell: peterson
+
+WHICH FILES TO OPEN / SHOW
+--------------------------
+support/shm.c (shm_get syscall), peterson.c (the flag/turn protocol)
+
+EXPECTED OUTPUT
+---------------
+counter = 20000, exactly as expected, with no interleaved critical sections (verified).
+
+IN THE LAB: WHAT TO DO AND WHAT TO SHOW
+---------------------------------------
+Read peterson.c and be able to explain why the busy-wait condition guarantees mutual exclusion. Run it, screenshot the PASS line.
+
+HOW IT IS IMPLEMENTED
+---------------------
+Kernel part: a shm_get() syscall that maps one kernel-owned frame at a fixed address so parent and child after fork() see the same page. User part: put flag[2] and turn in that page and run the classic protocol - set your flag, give away the turn, busy-wait while the other wants in and it is their turn.

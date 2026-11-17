@@ -1,0 +1,27 @@
+xv6 OS LAB - ASSIGNMENT 4, A4 Q3: MLFQ scheduler (3 queues)
+================================================================
+
+WHAT THE QUESTION ASKS
+----------------------
+Three queues: level 0 runs 1 tick, level 1 runs 2, level 2 runs 4. Always pick from the highest non-empty queue, round-robin inside it, and demote a process that uses its whole quantum. New processes start at level 0.
+
+HOW TO BUILD AND RUN
+--------------------
+Build and boot:   make clean && make SCHED=MLFQ qemu CPUS=1
+At the xv6 shell: mlfqtest
+
+WHICH FILES TO OPEN / SHOW
+--------------------------
+proc.c (queue_level/qticks in proc.h, MLFQ case in pick(), quantum table in sched_charge(), periodic boost in sched_tick())
+
+EXPECTED OUTPUT
+---------------
+A CPU-bound child sinks from queue 0 to queue 2 while a short job stays at the top and finishes fast (verified).
+
+IN THE LAB: WHAT TO DO AND WHAT TO SHOW
+---------------------------------------
+Follow one process through sched_charge(): qticks reaches its queue limit, level rises, slice resets. Blocking voluntarily also ends the slice. Run mlfqtest, screenshot.
+
+HOW IT IS IMPLEMENTED
+---------------------
+Add queue_level and qticks to proc.h. The scheduler scans queue 0, then 1, then 2, round-robin inside each. Every tick adds to qticks; at the queue limit (1, 2 or 4 ticks) demote one level and yield. Blocking voluntarily ends the slice, and a periodic boost returns everyone to queue 0.

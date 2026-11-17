@@ -1,0 +1,27 @@
+xv6 OS LAB - ASSIGNMENT 6, A6 Q4: Five processes, three bounded resource pools
+================================================================
+
+WHAT THE QUESTION ASKS
+----------------------
+Five forked processes each need two of three resource pools (capacities 2, 1, 2). Kernel semaphores enforce the capacities, a shared page records usage, and everyone acquires pool types in the same ascending order so the run completes.
+
+HOW TO BUILD AND RUN
+--------------------
+Build and boot:   make qemu CPUS=1
+At the xv6 shell: syncdeadlock
+
+WHICH FILES TO OPEN / SHOW
+--------------------------
+support/sem.c, support/shm.c, syncdeadlock.c
+
+EXPECTED OUTPUT
+---------------
+Every process finishes its cycles; pool usage never exceeds capacity.
+
+IN THE LAB: WHAT TO DO AND WHAT TO SHOW
+---------------------------------------
+Note how the semaphore counts mirror pool capacities. Run syncdeadlock, screenshot the completions.
+
+HOW IT IS IMPLEMENTED
+---------------------
+Three semaphores counted to the pool capacities 2, 1, 2. Each of the five forked processes acquires its two pools in ascending type order, works, releases, repeats; a shared page records current usage so violations would show.

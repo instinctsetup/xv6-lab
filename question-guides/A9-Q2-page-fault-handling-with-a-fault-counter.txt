@@ -1,0 +1,27 @@
+xv6 OS LAB - ASSIGNMENT 9, A9 Q2: Page fault handling with a fault counter
+================================================================
+
+WHAT THE QUESTION ASKS
+----------------------
+The lazy-allocation sheet's version: sbrk only records growth, T_PGFLT allocates on demand, a new pgfaults field counts handled faults, and getfaults() returns it. Touching 5 pages after sbrk(32 * 4096) must report exactly 5 faults.
+
+HOW TO BUILD AND RUN
+--------------------
+Build and boot:   make clean && make LAZY=1 qemu CPUS=1
+At the xv6 shell: faulttest
+
+WHICH FILES TO OPEN / SHOW
+--------------------------
+Shared lazy handler with A8 Q4; proc.h (pgfaults), sysproc.c (getfaults)
+
+EXPECTED OUTPUT
+---------------
+faults = 5 after 5 touches, re-touching a mapped page adds none, and an access above sz kills only the child while the parent survives (verified).
+
+IN THE LAB: WHAT TO DO AND WHAT TO SHOW
+---------------------------------------
+Explain why the second touch is free (uvmpresent check). Run faulttest, screenshot the PASS lines.
+
+HOW IT IS IMPLEMENTED
+---------------------
+Same lazy handler as A8 Q4, plus accounting: add pgfaults to struct proc, increment it in the T_PGFLT handler after a successful mapping, and wire a getfaults() syscall that returns it.

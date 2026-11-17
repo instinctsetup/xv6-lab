@@ -1,0 +1,27 @@
+xv6 OS LAB - ASSIGNMENT 8, A8 Q4: Lazy allocation (demand paging)
+================================================================
+
+WHAT THE QUESTION ASKS
+----------------------
+sys_sbrk() only records growth; the T_PGFLT handler in trap.c allocates a zeroed frame on first touch and maps it PTE_W | PTE_U. Edge cases: kalloc failure, faults above sz, faults below the heap, kernel syscalls touching lazy buffers, and copyuvm() skipping never-allocated pages.
+
+HOW TO BUILD AND RUN
+--------------------
+Build and boot:   make clean && make LAZY=1 qemu CPUS=1
+At the xv6 shell: lazytest
+
+WHICH FILES TO OPEN / SHOW
+--------------------------
+sysproc.c (lazy sbrk), trap.c (T_PGFLT handler), vm.c (copyuvm skips absent pages), proc.h (heap_start)
+
+EXPECTED OUTPUT
+---------------
+A 32 MB sbrk consumes 0 frames; touching 3 pages consumes exactly 3 (plus page tables); a read() into an untouched buffer works; an out-of-bounds write kills only that process (all 6 phases verified).
+
+IN THE LAB: WHAT TO DO AND WHAT TO SHOW
+---------------------------------------
+Follow one fault from rcr2() to mappages(). Note heap_start: faults below the heap kill the process instead of mapping page zero. Run lazytest, screenshot each phase.
+
+HOW IT IS IMPLEMENTED
+---------------------
+sys_sbrk(): for n > 0 just do sz += n and return. trap() case T_PGFLT: read the faulting address with rcr2(); if it lies in [heap_start, sz) and has no present PTE, kalloc() a frame, zero it, mappages() it PTE_W|PTE_U and return from the trap; anything else kills the process. copyuvm() and deallocuvm() must skip never-allocated pages instead of panicking.

@@ -1,0 +1,27 @@
+xv6 OS LAB - ASSIGNMENT 4, A4 Q2: HRRN scheduler
+================================================================
+
+WHAT THE QUESTION ASKS
+----------------------
+Non-preemptive highest-response-ratio-next: response ratio = (wait time + burst) * 100 / burst, with wait time from ticks minus ctime, computed in integer arithmetic.
+
+HOW TO BUILD AND RUN
+--------------------
+Build and boot:   make clean && make SCHED=HRRN qemu CPUS=1
+At the xv6 shell: hrrntest
+
+WHICH FILES TO OPEN / SHOW
+--------------------------
+proc.c (HRRN case in key(); ready_since tracks when the process last became RUNNABLE)
+
+EXPECTED OUTPUT
+---------------
+Short jobs run early, and a long job eventually wins as its wait time grows (verified).
+
+IN THE LAB: WHAT TO DO AND WHAT TO SHOW
+---------------------------------------
+Read how the HRRN key inverts the ratio so "lowest key wins" still works. Run hrrntest, screenshot.
+
+HOW IT IS IMPLEMENTED
+---------------------
+Reuse ctime and burst_time. At each pick, compute (wait + burst) * 100 / burst in integer arithmetic with wait = ticks - ctime, run the highest ratio, and do not preempt on ticks.

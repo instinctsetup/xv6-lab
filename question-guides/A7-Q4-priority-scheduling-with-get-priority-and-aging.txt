@@ -1,0 +1,27 @@
+xv6 OS LAB - ASSIGNMENT 7, A7 Q4: Priority scheduling with get_priority and aging
+================================================================
+
+WHAT THE QUESTION ASKS
+----------------------
+The same policy as A3 Q2: priorities 1-20 with default 10, set_priority() and get_priority(), lowest number first with round-robin ties, and aging after 30 waiting ticks.
+
+HOW TO BUILD AND RUN
+--------------------
+Build and boot:   make clean && make SCHED=PRIO qemu CPUS=1
+At the xv6 shell: priotest
+
+WHICH FILES TO OPEN / SHOW
+--------------------------
+Shared with A3 Q2: proc.c (effective_priority(), sched_tick()), sysproc.c
+
+EXPECTED OUTPUT
+---------------
+Same verified behavior as A3 Q2; this is why 28 test programs cover 29 questions.
+
+IN THE LAB: WHAT TO DO AND WHAT TO SHOW
+---------------------------------------
+If you already ran A3 Q2, capture get_priority() output here as the extra syscall this sheet asks for.
+
+HOW IT IS IMPLEMENTED
+---------------------
+The same implementation as A3 Q2 (priority field, set_priority, lowest number first, aging after 30 ticks); this sheet also asks for get_priority, wired the same way, so the test can print what aging changed.

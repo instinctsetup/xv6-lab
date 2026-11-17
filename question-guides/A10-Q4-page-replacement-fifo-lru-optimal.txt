@@ -1,0 +1,27 @@
+xv6 OS LAB - ASSIGNMENT 10, A10 Q4: Page replacement: FIFO, LRU, Optimal
+================================================================
+
+WHAT THE QUESTION ASKS
+----------------------
+All three algorithms in one user-space simulator on the same standard string: per-reference frames and hit/fault, totals for 3 frames, then a 3/4/5-frame comparison table with hits, hit ratio and fault ratio, and which algorithm wins.
+
+HOW TO BUILD AND RUN
+--------------------
+Build and boot:   make qemu CPUS=1
+At the xv6 shell: pagereplace
+
+WHICH FILES TO OPEN / SHOW
+--------------------------
+pagereplace.c (user space only)
+
+EXPECTED OUTPUT
+---------------
+Optimal fewest faults, LRU next, FIFO most on the standard string; the table prints all three at 3, 4 and 5 frames.
+
+IN THE LAB: WHAT TO DO AND WHAT TO SHOW
+---------------------------------------
+Pair with A9 Q3: this adds Optimal and the hit/fault ratios. Screenshot the table for your report.
+
+HOW IT IS IMPLEMENTED
+---------------------
+Extend the A9 Q3 simulator with Optimal: evict the page whose next use is furthest in the future (look ahead in the reference string). Then loop all three algorithms over 3, 4 and 5 frames and tabulate faults, hits and ratios.

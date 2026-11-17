@@ -1,0 +1,27 @@
+xv6 OS LAB - ASSIGNMENT 6, A6 Q1: Banker's algorithm
+================================================================
+
+WHAT THE QUESTION ASKS
+----------------------
+Simulate Allocation, Max, Available and Need for at least 5 processes and 3 resource types; implement the safety algorithm (find a safe sequence) and the request algorithm (grant only if the resulting state stays safe, else roll back).
+
+HOW TO BUILD AND RUN
+--------------------
+Build and boot:   make qemu CPUS=1
+At the xv6 shell: bankers
+
+WHICH FILES TO OPEN / SHOW
+--------------------------
+bankers.c (user space only, no kernel changes)
+
+EXPECTED OUTPUT
+---------------
+A safe sequence, a granted request, an unsafe request rolled back, and an over-Need rejection, all printed with the matrices.
+
+IN THE LAB: WHAT TO DO AND WHAT TO SHOW
+---------------------------------------
+Walk the safety algorithm by hand on the hardcoded matrices before running, then compare. Screenshot each case.
+
+HOW IT IS IMPLEMENTED
+---------------------
+All in user space: store Allocation, Max, Available as arrays and compute Need = Max - Allocation. Safety: repeatedly find a process whose Need fits in Available, pretend it finishes, add its Allocation back. Request: tentatively subtract from Available and Need, re-run safety, roll back if unsafe.

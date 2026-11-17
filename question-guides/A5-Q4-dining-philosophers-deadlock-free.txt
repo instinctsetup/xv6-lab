@@ -1,0 +1,27 @@
+xv6 OS LAB - ASSIGNMENT 5, A5 Q4: Dining philosophers (deadlock-free)
+================================================================
+
+WHAT THE QUESTION ASKS
+----------------------
+Five philosophers, five forks as binary semaphores, cycles of thinking, hungry, eating. Must use a deadlock-avoidance strategy; this tree uses resource ordering (always pick the lower-numbered fork first).
+
+HOW TO BUILD AND RUN
+--------------------
+Build and boot:   make qemu CPUS=1
+At the xv6 shell: dining
+
+WHICH FILES TO OPEN / SHOW
+--------------------------
+support/sem.c, dining.c (fork ordering per philosopher)
+
+EXPECTED OUTPUT
+---------------
+All five philosophers complete their cycles with no hang and no starvation over the run.
+
+IN THE LAB: WHAT TO DO AND WHAT TO SHOW
+---------------------------------------
+Be ready to explain why picking the lower-numbered fork first breaks the circular wait. Run dining, screenshot the transitions.
+
+HOW IT IS IMPLEMENTED
+---------------------
+One binary semaphore per fork, all starting at 1. Each philosopher picks up the lower-numbered of its two forks first, then the higher one, eats, and puts both down. That global ordering is what removes the circular wait.

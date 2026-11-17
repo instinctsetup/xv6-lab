@@ -1,0 +1,27 @@
+xv6 OS LAB - ASSIGNMENT 7, A7 Q2: Kernel semaphores fix the race
+================================================================
+
+WHAT THE QUESTION ASKS
+----------------------
+Implement sem_init/sem_wait/sem_signal (plus sem_destroy) as real kernel calls on sleep()/wakeup(), then show the same thread counter becomes exact and run a size-5 producer-consumer over the shared page.
+
+HOW TO BUILD AND RUN
+--------------------
+Build and boot:   make qemu CPUS=1
+At the xv6 shell: synctest
+
+WHICH FILES TO OPEN / SHOW
+--------------------------
+support/sem.c (the semaphore array), sysproc.c (wrappers), synctest.c
+
+EXPECTED OUTPUT
+---------------
+counter = 6000 exactly (verified); the producer-consumer log shows no overflow or underflow.
+
+IN THE LAB: WHAT TO DO AND WHAT TO SHOW
+---------------------------------------
+Compare with Q1: same workload, semaphore around the increment. Run synctest, screenshot the PASS.
+
+HOW IT IS IMPLEMENTED
+---------------------
+A fixed array of 10 kernel semaphores: sem_init(id, value), sem_wait sleeps while the count is 0, sem_signal wakes one sleeper. Wrap the shared counter increment in wait/signal and the lost updates disappear.

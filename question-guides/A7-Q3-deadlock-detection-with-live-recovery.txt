@@ -1,0 +1,27 @@
+xv6 OS LAB - ASSIGNMENT 7, A7 Q3: Deadlock detection with live recovery
+================================================================
+
+WHAT THE QUESTION ASKS
+----------------------
+Work/finish reduction over Allocation/Request/Available matrices for current requests, a safety check for future maximum demand, rollback of an unsafe tentative request, and a live two-thread AB-BA deadlock that gets detected and recovered by destroying the semaphores.
+
+HOW TO BUILD AND RUN
+--------------------
+Build and boot:   make qemu CPUS=1
+At the xv6 shell: deadlock
+
+WHICH FILES TO OPEN / SHOW
+--------------------------
+proc.c (waiting_on bookkeeping), support/sem.c (owner and hold counts), deadlock.c
+
+EXPECTED OUTPUT
+---------------
+Detection names exactly the stuck processes (the related detector verified: P1 and P2), the safe case passes, and the unsafe request rolls back.
+
+IN THE LAB: WHAT TO DO AND WHAT TO SHOW
+---------------------------------------
+Separate the two ideas in your head: detection (are we stuck now) vs safety (could we get stuck). Run deadlock, screenshot each case.
+
+HOW IT IS IMPLEMENTED
+---------------------
+Instrument the semaphores: each remembers its current holder, and each blocked thread records waiting_on. Detection walks that holder-waiter chain looking for a cycle; recovery calls sem_destroy, which wakes the waiters with an error so they can back out.

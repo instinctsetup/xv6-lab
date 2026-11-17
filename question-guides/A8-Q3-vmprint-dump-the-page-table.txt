@@ -1,0 +1,27 @@
+xv6 OS LAB - ASSIGNMENT 8, A8 Q3: vmprint: dump the page table
+================================================================
+
+WHAT THE QUESTION ASKS
+----------------------
+A vmprint() syscall printing every valid page directory entry and its page table entries (index, virtual address, frame, P/W/U) below KERNBASE with two-level indentation, plus a summary line. Spot the stack guard page (PTE_U cleared) that exec() creates.
+
+HOW TO BUILD AND RUN
+--------------------
+Build and boot:   make qemu CPUS=1
+At the xv6 shell: vmprinttest
+
+WHICH FILES TO OPEN / SHOW
+--------------------------
+vm.c (vmprint, modelled on freevm's walk)
+
+EXPECTED OUTPUT
+---------------
+A consistent dump at startup, new entries after sbrk(8 * 4096), one removed after sbrk(-4096), and the guard page identifiable.
+
+IN THE LAB: WHAT TO DO AND WHAT TO SHOW
+---------------------------------------
+Find the guard page in the output and count user pages against sz / PGSIZE. Run vmprinttest, screenshot all three dumps.
+
+HOW IT IS IMPLEMENTED
+---------------------
+vmprint(): two nested loops modelled on freevm() - for each present page directory entry below KERNBASE print it, then print each present PTE under it with its virtual address, frame and flags, indented by level. The guard page is the one with PTE_U cleared.

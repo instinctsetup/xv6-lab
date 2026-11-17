@@ -1,0 +1,27 @@
+xv6 OS LAB - ASSIGNMENT 10, A10 Q3: pageinfo and setreadonly
+================================================================
+
+WHAT THE QUESTION ASKS
+----------------------
+pageinfo() shows whether an address is mapped plus its frame and P/W/U flags; setreadonly() clears PTE_W on the page. Writing afterwards must fault.
+
+HOW TO BUILD AND RUN
+--------------------
+Build and boot:   make qemu CPUS=1
+At the xv6 shell: pagetest
+
+WHICH FILES TO OPEN / SHOW
+--------------------------
+vm.c (pageinfo, setreadonly), sysproc.c
+
+EXPECTED OUTPUT
+---------------
+The page shows writable, then read-only after setreadonly, and the attempted write faults and the process is killed.
+
+IN THE LAB: WHAT TO DO AND WHAT TO SHOW
+---------------------------------------
+Find where the fault lands in trap.c and why the process is killed rather than the page silently re-writable. Run pagetest, screenshot.
+
+HOW IT IS IMPLEMENTED
+---------------------
+pageinfo(): walk to the PTE and print the frame and P/W/U flags. setreadonly(): walk to the same entry and clear PTE_W. The next write faults because the hardware checks that bit on every store; the fault handler kills the process.

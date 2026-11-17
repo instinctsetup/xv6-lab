@@ -1,0 +1,27 @@
+xv6 OS LAB - ASSIGNMENT 3, A3 Q2: Priority scheduler with aging
+================================================================
+
+WHAT THE QUESTION ASKS
+----------------------
+Priority field 1 (highest) to 20 (lowest), default 10, a set_priority() syscall, always run the lowest priority number, ties round-robin, and aging: a process waiting more than 30 ticks gains one priority level.
+
+HOW TO BUILD AND RUN
+--------------------
+Build and boot:   make clean && make SCHED=PRIO qemu CPUS=1
+At the xv6 shell: priotest
+
+WHICH FILES TO OPEN / SHOW
+--------------------------
+proc.c (effective_priority(), sched_tick(), AGING_INTERVAL in support/sched.h), sysproc.c (set_priority/get_priority)
+
+EXPECTED OUTPUT
+---------------
+Higher priority finishes first (verified: priorities 2, 10, 17 in order), and the lowest-priority process still completes because aging lifts it.
+
+IN THE LAB: WHAT TO DO AND WHAT TO SHOW
+---------------------------------------
+Follow how sched_tick() ratchets priority down (number) after AGING_INTERVAL and resets ready_since. Run priotest and screenshot.
+
+HOW IT IS IMPLEMENTED
+---------------------
+Add priority to proc.h with default 10. Wire the set_priority syscall end to end: a number in syscall.h, a stub in usys.S, a declaration in user.h, a table entry in syscall.c, the implementation in sysproc.c. The scheduler picks the lowest priority number, and a per-tick routine raises a waiting process one level after 30 ticks.

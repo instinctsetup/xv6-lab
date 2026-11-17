@@ -1,0 +1,27 @@
+xv6 OS LAB - ASSIGNMENT 8, A8 Q1: va2pa: virtual to physical translation
+================================================================
+
+WHAT THE QUESTION ASKS
+----------------------
+A va2pa() syscall that walks the calling process's two-level page table with walkpgdir(), returns the physical address (-1 when not present or not user-accessible), and cprintf's the page directory index, page table index, offset and P/W/U flags.
+
+HOW TO BUILD AND RUN
+--------------------
+Build and boot:   make qemu CPUS=1
+At the xv6 shell: va2patest
+
+WHICH FILES TO OPEN / SHOW
+--------------------------
+vm.c (va2pa with the verbose walk), sysproc.c
+
+EXPECTED OUTPUT
+---------------
+Global, local and malloc'd addresses translated; 0x7FFFFFFF returns -1; after fork, parent and child show the same virtual address but different physical frames (verified).
+
+IN THE LAB: WHAT TO DO AND WHAT TO SHOW
+---------------------------------------
+Be able to split a 32-bit address into 10/10/12 by hand. Run va2patest, screenshot the walk and the fork comparison.
+
+HOW IT IS IMPLEMENTED
+---------------------
+va2pa(): call walkpgdir(pgdir, va, 0); return -1 when there is no PTE, the page is not present, or PTE_U is clear; otherwise return PTE_ADDR(*pte) | (va & 0xFFF). The kernel side also cprintf's the page directory index, page table index, offset and P/W/U flags.

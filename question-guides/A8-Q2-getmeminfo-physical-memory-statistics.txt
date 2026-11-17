@@ -1,0 +1,27 @@
+xv6 OS LAB - ASSIGNMENT 8, A8 Q2: getmeminfo: physical memory statistics
+================================================================
+
+WHAT THE QUESTION ASKS
+----------------------
+Track free pages in kalloc.c and fill a meminfo struct: total_pages, free_pages, the caller's user pages (sz / PGSIZE) and its page-table pages. Prove there is no leak: free pages return to the earlier value after a child exits and is reaped.
+
+HOW TO BUILD AND RUN
+--------------------
+Build and boot:   make qemu CPUS=1
+At the xv6 shell: meminfo_test
+
+WHICH FILES TO OPEN / SHOW
+--------------------------
+kalloc.c (kfree_pages), vm.c (count_pt_pages), sysproc.c (getmeminfo), support/meminfo.h
+
+EXPECTED OUTPUT
+---------------
++4 user pages and -4 free pages after sbrk, and zero leak after the child is reaped (verified: exact match, PASSED).
+
+IN THE LAB: WHAT TO DO AND WHAT TO SHOW
+---------------------------------------
+Read kfree_pages() and count_pt_pages(). Run meminfo_test, screenshot the leak check.
+
+HOW IT IS IMPLEMENTED
+---------------------
+kfree_pages() walks the free list under kmem.lock and counts it; count_pt_pages() walks the page directory counting present page tables; getmeminfo() fills the struct with those plus total frames and sz / PGSIZE.

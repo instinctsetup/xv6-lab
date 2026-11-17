@@ -1,0 +1,27 @@
+xv6 OS LAB - ASSIGNMENT 5, A5 Q3: Readers-writers
+================================================================
+
+WHAT THE QUESTION ASKS
+----------------------
+Readers-priority locking over a shared integer: read_count under a mutex lets many readers in together; a writer needs exclusive access. At least 3 readers and 2 writers.
+
+HOW TO BUILD AND RUN
+--------------------
+Build and boot:   make qemu CPUS=1
+At the xv6 shell: readwrite
+
+WHICH FILES TO OPEN / SHOW
+--------------------------
+support/sem.c, readwrite.c (read_count, mutex and write semaphore)
+
+EXPECTED OUTPUT
+---------------
+Concurrent reader overlap, and no reader or writer active during a write.
+
+IN THE LAB: WHAT TO DO AND WHAT TO SHOW
+---------------------------------------
+Explain the first-reader/last-reader pattern around the write semaphore. Run readwrite, screenshot.
+
+HOW IT IS IMPLEMENTED
+---------------------
+Guard read_count with a mutex semaphore. The first reader in takes the write semaphore and the last reader out releases it, so readers overlap; a writer simply takes the write semaphore for exclusive access.

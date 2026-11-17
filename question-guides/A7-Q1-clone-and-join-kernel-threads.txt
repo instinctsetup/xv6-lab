@@ -1,0 +1,27 @@
+xv6 OS LAB - ASSIGNMENT 7, A7 Q1: clone() and join(): kernel threads
+================================================================
+
+WHAT THE QUESTION ASKS
+----------------------
+Add clone(fcn, arg, stack): a new process that shares the caller page table and starts at fcn(arg) on a caller-supplied stack, plus join() to reap it. The PDF pairs this with a deliberately unsynchronized shared counter so the race is visible before Q2 fixes it.
+
+HOW TO BUILD AND RUN
+--------------------
+Build and boot:   make qemu CPUS=1
+At the xv6 shell: threadtest
+
+WHICH FILES TO OPEN / SHOW
+--------------------------
+proc.c (clone(), join(), thread-aware exit/wait/kill), proc.h (is_thread/leader/nthreads), support/umalloc.c (thread-safe malloc)
+
+EXPECTED OUTPUT
+---------------
+Three threads run and join cleanly (verified: counter 300000 with synchronized increments). Without synchronization, lost updates are the lesson of the question.
+
+IN THE LAB: WHAT TO DO AND WHAT TO SHOW
+---------------------------------------
+Read clone(): the fake stack frame, the shared pgdir, and why exit() reaps a leader's threads before the address space is freed. Run threadtest, screenshot.
+
+HOW IT IS IMPLEMENTED
+---------------------
+clone(): allocproc(), share the caller's pgdir instead of copyuvm(), copy the trapframe, set eip to the function and esp to the caller-supplied stack with a fake return frame on it. join(): find a ZOMBIE thread of this group and free its kernel stack only. exit(), wait() and kill() all need thread-aware paths so the shared address space is freed exactly once.

@@ -1,0 +1,27 @@
+xv6 OS LAB - ASSIGNMENT 4, A4 Q1: SRTF scheduler (preemptive SJF)
+================================================================
+
+WHAT THE QUESTION ASKS
+----------------------
+Like SJF but preemptive: remaining_time starts at the declared burst, the timer tick in trap() decrements it, and the CPU goes to the RUNNABLE process with the smallest remaining time.
+
+HOW TO BUILD AND RUN
+--------------------
+Build and boot:   make clean && make SCHED=SRTF qemu CPUS=1
+At the xv6 shell: srtftest
+
+WHICH FILES TO OPEN / SHOW
+--------------------------
+proc.c (SRTF case in key(), sched_charge() decrements remaining_time and returns 1 = re-pick every tick), trap.c
+
+EXPECTED OUTPUT
+---------------
+A newly arrived short job preempts the long one; the short job finishes first (verified).
+
+IN THE LAB: WHAT TO DO AND WHAT TO SHOW
+---------------------------------------
+Compare sched_charge() for SRTF against SJF: returning 1 forces a yield and re-pick every tick. Run srtftest, screenshot the preemption.
+
+HOW IT IS IMPLEMENTED
+---------------------
+Keep burst_time and add remaining_time, initialized by set_burst. On every timer tick in trap(), decrement the running process's remaining_time and yield, so the scheduler re-picks whoever now has the smallest remaining time.

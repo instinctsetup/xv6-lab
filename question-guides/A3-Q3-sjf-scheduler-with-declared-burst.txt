@@ -1,0 +1,27 @@
+xv6 OS LAB - ASSIGNMENT 3, A3 Q3: SJF scheduler with declared burst
+================================================================
+
+WHAT THE QUESTION ASKS
+----------------------
+A burst_time field and a set_burst() syscall so a process declares its expected length; the scheduler picks the smallest burst, non-preemptive; processes that never set a burst go last.
+
+HOW TO BUILD AND RUN
+--------------------
+Build and boot:   make clean && make SCHED=SJF qemu CPUS=1
+At the xv6 shell: sjftest
+
+WHICH FILES TO OPEN / SHOW
+--------------------------
+proc.c (SJF case in key()), sysproc.c (set_burst), proc.h (burst_time)
+
+EXPECTED OUTPUT
+---------------
+Completion in ascending burst order (verified: burst 20, 40, 60).
+
+IN THE LAB: WHAT TO DO AND WHAT TO SHOW
+---------------------------------------
+Check how key() maps an unset burst (-1) to the largest key so it schedules last. Run sjftest, screenshot.
+
+HOW IT IS IMPLEMENTED
+---------------------
+Add burst_time to proc.h and wire set_burst the same way as set_priority. The scheduler picks the smallest declared burst and never preempts; map an unset burst to the largest key so those processes go last.

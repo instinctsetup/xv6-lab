@@ -1,0 +1,27 @@
+xv6 OS LAB - ASSIGNMENT 6, A6 Q2: Wait-for graph cycle detection
+================================================================
+
+WHAT THE QUESTION ASKS
+----------------------
+Build a wait-for graph from allocation/request matrices and detect cycles with DFS. A cycle means deadlock when each resource type has one instance.
+
+HOW TO BUILD AND RUN
+--------------------
+Build and boot:   make qemu CPUS=1
+At the xv6 shell: deadlockdetect
+
+WHICH FILES TO OPEN / SHOW
+--------------------------
+deadlockdetect.c (user space only)
+
+EXPECTED OUTPUT
+---------------
+The deadlocked set is identified exactly (verified: P1 and P2, count 2) and a no-cycle case comes back clean.
+
+IN THE LAB: WHAT TO DO AND WHAT TO SHOW
+---------------------------------------
+Follow the DFS and the printed cycle. Run deadlockdetect, screenshot the PASS line.
+
+HOW IT IS IMPLEMENTED
+---------------------
+All in user space: build the wait-for graph from the Allocation and Request matrices (Pi points to Pj when Pi waits for a resource Pj holds), then run DFS from each node watching for a back edge; any cycle is your deadlock set.

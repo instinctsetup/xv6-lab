@@ -1,0 +1,27 @@
+xv6 OS LAB - ASSIGNMENT 6, A6 Q3: Bad vs fixed resource acquisition order
+================================================================
+
+WHAT THE QUESTION ASKS
+----------------------
+First show two workers acquiring two semaphores in opposite order and stalling (a parent watchdog records the circular wait and recovers by destroying the semaphores), then show the same workers succeeding with a common global order.
+
+HOW TO BUILD AND RUN
+--------------------
+Build and boot:   make qemu CPUS=1
+At the xv6 shell: resourceorder
+
+WHICH FILES TO OPEN / SHOW
+--------------------------
+support/sem.c (sem_destroy wakes blocked waiters), support/shm.c, resourceorder.c
+
+EXPECTED OUTPUT
+---------------
+Run one deadlocks and is recovered by the watchdog; run two with ordered acquisition completes.
+
+IN THE LAB: WHAT TO DO AND WHAT TO SHOW
+---------------------------------------
+Connect this to the four deadlock conditions: ordering breaks circular wait. Screenshot both runs.
+
+HOW IT IS IMPLEMENTED
+---------------------
+Two forked workers and two semaphores. First run: they acquire in opposite orders and stall; a parent watchdog notices no progress and calls sem_destroy to recover. Second run: both acquire in the same global order and finish.
