@@ -1,14 +1,30 @@
 XV6 OS LAB MANUAL - ASSIGNMENTS 3 TO 10, ALL 29 QUESTIONS
 ================================================================
 
-One manual covering every question: what it asks, how to build
-and run it, which files to open, the exact code, the expected
-output, what to show in the lab, and how the solution works.
+One combined xv6 tree carries every field, syscall and test program
+the eight assignments need. This manual maps each question to its
+build command, its test, the code to read, and the output to
+capture - with the relevant code included verbatim, question by
+question.
 
-Repo layout: kernel source at the repo root; each question below
-names the files and functions to open. Build commands switch
-scheduler/lazy configuration; always run make clean first because
-the Makefile does not rebuild when only the SCHED=/LAZY= flags change.
+
+FIRST TIME: SET UP AND RUN
+--------------------------
+1. Get the tree: git clone the xv6-lab repo link, then cd xv6-lab. On a fresh Ubuntu: sudo apt-get install build-essential qemu-system-x86.
+2. Build once with plain make to confirm the toolchain works, then make qemu CPUS=1 (or make qemu-nox CPUS=1 for terminal only). You should reach the xv6 $ prompt.
+3. Every question below gives its exact build command. Most run on the default build; scheduler questions need their SCHED= switch and the lazy questions need LAZY=1.
+4. Run the listed test program at the $ prompt, screenshot the output for your submission, and read the code locations so you can explain them.
+5. Exit qemu with Ctrl-A then X. Rebuild after any edit: make clean && make (with the same switch), then run again.
+
+TWO BUILD SWITCHES
+Schedulers are chosen at build time:
+  make clean && make SCHED=FCFS|PRIO|SJF|SRTF|HRRN|MLFQ qemu CPUS=1
+Lazy allocation: make clean && make LAZY=1 qemu CPUS=1. Everything
+else (threads, semaphores, shared memory, paging, memory stats) is
+always in the default build. Always run make clean when switching:
+the Makefile does not rebuild when only the SCHED=/LAZY= flags
+change, so skipping clean silently reuses objects built for the
+old configuration.
 
 TABLE OF CONTENTS
 -----------------
@@ -57,6 +73,11 @@ ASSIGNMENT 10: Memory tracking, translation, protection, replacement
   A10 Q2  vtop: translate an address
   A10 Q3  pageinfo and setreadonly
   A10 Q4  Page replacement: FIFO, LRU, Optimal
+
+
+################################################################
+ASSIGNMENT 3 - CPU SCHEDULING: FCFS, PRIORITY WITH AGING, SJF
+Each scheduler is a separate build. Default make gives stock round robin.
 
 
 ################################################################
@@ -898,6 +919,11 @@ Follow one process through sched_charge(): qticks reaches its queue limit, level
 HOW IT IS IMPLEMENTED
 ---------------------
 Add queue_level and qticks to proc.h. The scheduler scans queue 0, then 1, then 2, round-robin inside each. Every tick adds to qticks; at the queue limit (1, 2 or 4 ticks) demote one level and yield. Blocking voluntarily ends the slice, and a periodic boost returns everyone to queue 0.
+
+
+################################################################
+ASSIGNMENT 5 - SYNCHRONIZATION CLASSICS IN USER SPACE
+All four run on the default build. Shared memory comes from shm_get(): one kernel-owned page both parent and child can see.
 
 
 ################################################################
@@ -1822,6 +1848,11 @@ Be ready to explain why picking the lower-numbered fork first breaks the circula
 HOW IT IS IMPLEMENTED
 ---------------------
 One binary semaphore per fork, all starting at 1. Each philosopher picks up the lower-numbered of its two forks first, then the higher one, eats, and puts both down. That global ordering is what removes the circular wait.
+
+
+################################################################
+ASSIGNMENT 6 - DEADLOCK: AVOIDANCE, DETECTION, PREVENTION
+Q1 and Q2 are pure user-space simulations, as the assignment specifies. Q3 and Q4 use the kernel semaphores and the shared page.
 
 
 ################################################################
@@ -5363,3 +5394,25 @@ Pair with A9 Q3: this adds Optimal and the hit/fault ratios. Screenshot the tabl
 HOW IT IS IMPLEMENTED
 ---------------------
 Extend the A9 Q3 simulator with Optimal: evict the page whose next use is furthest in the future (look ahead in the reference string). Then loop all three algorithms over 3, 4 and 5 frames and tabulate faults, hits and ratios.
+
+
+################################################################
+BEFORE YOU SUBMIT: SUBMISSION REMINDERS
+---------------------------------------
+1. Screenshot each test at the $ prompt; every assignment sheet asks for terminal output per question.
+2. A3 and A4 each want a short comparative write-up on turnaround, response time and starvation. A5 wants a README explaining your design. A6 to A10 want 1 to 4 page reports. Keep the outputs above as evidence.
+3. The kernel changes for every question are already in this tree with comments, so you can practice running and explaining without assembling anything. Each question's 'How it is implemented' line is the path you would take from stock xv6 - that is what to study for the viva and what to rewrite yourself if your lab asks for your own implementation.
+
+
+VERIFICATION AND LIMITS
+-----------------------
+Verified 17 Nov: the tree builds in all 9 configurations on GCC 11.4
+and GCC 12.3 (the GCC 12 sh.c infinite-recursion error was reproduced
+first, then fixed). Runtime on qemu 6.2, one CPU: on the GCC 11 builds,
+default and lazy pass the full stock usertests and the scheduler,
+thread, paging and memory tests ran with the outputs marked
+(verified); on the GCC 12.3 builds, boot smoke passed for default
+(forktest), FCFS (fcfstest) and lazy (faulttest). Outputs not marked
+(verified) are expected results from earlier verified runs. Not
+checked with multiple CPUs or GCC 13/14; if your build fails, share
+the exact terminal error.
