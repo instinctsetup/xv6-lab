@@ -173,6 +173,13 @@ _forktest: forktest.o $(ULIB)
 mkfs: mkfs.c fs.h
 	gcc -Werror -Wno-array-bounds -Wall -o mkfs mkfs.c
 
+# GCC 12+ flags the intentional recursion in sh.c's runcmd() with
+# -Winfinite-recursion, which -Werror then turns into a hard error. Keep the
+# warning visible but non-fatal for sh.o only. GCC < 12 has no such option
+# and rejects the flag outright, so probe for support before adding it.
+WNOERROR_INFINITE_RECURSION := $(shell printf 'int main(void){return 0;}\n' | $(CC) -Werror -Wno-error=infinite-recursion -x c -c -o /dev/null - 2>/dev/null && echo -Wno-error=infinite-recursion)
+sh.o: CFLAGS += $(WNOERROR_INFINITE_RECURSION)
+
 # Prevent deletion of intermediate files, e.g. cat.o, after first build, so
 # that disk image changes after first build are persistent until clean.  More
 # details:
