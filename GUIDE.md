@@ -19,8 +19,12 @@ make qemu CPUS=1      # or: make qemu-nox CPUS=1  (terminal-only)
 
 The Makefile already carries `-Wno-array-bounds`, needed for GCC 12 and
 newer (Ubuntu 22.10+/23/24): recent GCC raises a false-positive
-array-bounds error in `mp.c` and `-Werror` makes it fatal. With the flag,
-stock code builds unchanged. If you see a *different* error, report it.
+array-bounds error in `mp.c` and `-Werror` makes it fatal. GCC 12+ also
+flags the intentional recursion in `sh.c`'s `runcmd()` with
+`-Winfinite-recursion`; the Makefile downgrades that one warning to
+non-fatal for `sh.o` only (probed, so older GCC is unaffected) - the
+warning still prints. With these flags, stock code builds unchanged. If
+you see a *different* error, report it.
 
 ## Question-to-code map
 
