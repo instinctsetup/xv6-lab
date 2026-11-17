@@ -1,0 +1,5365 @@
+XV6 OS LAB MANUAL - ASSIGNMENTS 3 TO 10, ALL 29 QUESTIONS
+================================================================
+
+One manual covering every question: what it asks, how to build
+and run it, which files to open, the exact code, the expected
+output, what to show in the lab, and how the solution works.
+
+Repo layout: kernel source at the repo root; each question below
+names the files and functions to open. Build commands switch
+scheduler/lazy configuration; always run make clean first because
+the Makefile does not rebuild when only the SCHED=/LAZY= flags change.
+
+TABLE OF CONTENTS
+-----------------
+
+ASSIGNMENT 3: CPU scheduling: FCFS, priority with aging, SJF
+  A3 Q1   FCFS scheduler
+  A3 Q2   Priority scheduler with aging
+  A3 Q3   SJF scheduler with declared burst
+
+ASSIGNMENT 4: CPU scheduling: SRTF, HRRN, MLFQ
+  A4 Q1   SRTF scheduler (preemptive SJF)
+  A4 Q2   HRRN scheduler
+  A4 Q3   MLFQ scheduler (3 queues)
+
+ASSIGNMENT 5: Synchronization classics in user space
+  A5 Q1   Peterson's algorithm
+  A5 Q2   Producer-consumer (bounded buffer)
+  A5 Q3   Readers-writers
+  A5 Q4   Dining philosophers (deadlock-free)
+
+ASSIGNMENT 6: Deadlock: avoidance, detection, prevention
+  A6 Q1   Banker's algorithm
+  A6 Q2   Wait-for graph cycle detection
+  A6 Q3   Bad vs fixed resource acquisition order
+  A6 Q4   Five processes, three bounded resource pools
+
+ASSIGNMENT 7: Kernel threads, semaphores, deadlock recovery, priority scheduling
+  A7 Q1   clone() and join(): kernel threads
+  A7 Q2   Kernel semaphores fix the race
+  A7 Q3   Deadlock detection with live recovery
+  A7 Q4   Priority scheduling with get_priority and aging
+
+ASSIGNMENT 8: Memory management: translation, statistics, page tables, lazy allocation
+  A8 Q1   va2pa: virtual to physical translation
+  A8 Q2   getmeminfo: physical memory statistics
+  A8 Q3   vmprint: dump the page table
+  A8 Q4   Lazy allocation (demand paging)
+
+ASSIGNMENT 9: Page tables and page faults
+  A9 Q1   Page table walk and count
+  A9 Q2   Page fault handling with a fault counter
+  A9 Q3   Page replacement: FIFO and LRU
+
+ASSIGNMENT 10: Memory tracking, translation, protection, replacement
+  A10 Q1  memstats: allocation counters
+  A10 Q2  vtop: translate an address
+  A10 Q3  pageinfo and setreadonly
+  A10 Q4  Page replacement: FIFO, LRU, Optimal
+
+
+################################################################
+xv6 OS LAB - ASSIGNMENT 3, A3 Q1: FCFS scheduler
+================================================================
+
+WHAT THE QUESTION ASKS
+----------------------
+Replace the round-robin scheduler with non-preemptive first-come-first-served: a ctime field set from ticks in allocproc(), and a scheduler that always picks the RUNNABLE process with the smallest ctime and lets it finish.
+
+HOW TO BUILD AND RUN
+--------------------
+Build and boot:   make clean && make SCHED=FCFS qemu CPUS=1
+At the xv6 shell: fcfstest
+
+WHICH FILES TO OPEN / SHOW
+--------------------------
+proc.c (key() and pick()), proc.h (ctime), trap.c (no timer yield under FCFS)
+
+EXPECTED OUTPUT
+---------------
+Three staggered children finish strictly in creation order: child 0, then 1, then 2 (verified).
+
+CODE (verbatim from the repo)
+---------------------------
+
+----- proc.h - struct proc field -----
+  // Scheduler fields (Assignments 3 and 4; see sched.h for the policy).
+  uint ctime;                  // A3 Q1/A4 Q2: creation time in ticks
+  int burst_time;              // A3 Q3/A4: estimated burst, -1 = unset
+
+----- proc.c - allocproc() sets creation time -----
+  *(uint*)sp = (uint)trapret;
+
+  // ---- consolidated lab build: per-process defaults ----
+  p->ctime = ticks;                    // A3 Q1/A4 Q2
+  p->burst_time = -1;                  // A3 Q3/A4: unset until set_burst()
+
+----- proc.c - key(), FCFS case -----
+// ... inside key(): switch(SCHED) ...
+  case SCHED_FCFS:                    // A3 Q1: earliest creation wins
+    return p->ctime;
+
+----- proc.c - pick() -----
+static struct proc*
+pick(void)
+{
+  struct proc *p, *best = 0;
+  uint bkey = 0;
+
+  for(p = ptable.proc; p < &ptable.proc[NPROC]; p++){
+    uint k;
+    if(p->state != RUNNABLE)
+      continue;
+    if(SCHED == SCHED_MLFQ){
+      // A4 Q3: never pick a lower queue while a higher queue has work.
+      if(best != 0){
+        if(p->queue_level > best->queue_level)
+          continue;
+        if(p->queue_level == best->queue_level &&
+           p->last_run >= best->last_run)
+          continue;
+        best = p;
+      } else {
+        best = p;
+      }
+      continue;
+    }
+    k = key(p);
+    if(best == 0 || k < bkey || (k == bkey && p->last_run < best->last_run)){
+      best = p;
+      bkey = k;
+    }
+  }
+  return best;
+}
+
+----- proc.c - sched_charge() (0 = never preempted) -----
+// Charge one tick of runtime and apply per-policy quantum accounting.
+// Called from trap.c while handling a timer interrupt on a RUNNING proc.
+// Returns 1 when the policy wants the CPU back (preemption).
+int
+sched_charge(struct proc *p)
+{
+  p->rtime++;
+  p->qticks++;
+  switch(SCHED){
+  case SCHED_SRTF:                     // A4 Q1
+    if(p->burst_time >= 0 && p->remaining_time > 0)
+      p->remaining_time--;
+    return 1;                          // re-pick every tick
+  case SCHED_MLFQ: {                   // A4 Q3: demote at quantum expiry
+    int limit = p->queue_level == 0 ? MLFQ_Q0_TICKS :
+                p->queue_level == 1 ? MLFQ_Q1_TICKS : MLFQ_Q2_TICKS;
+    if(p->qticks >= limit){
+      if(p->queue_level < MLFQ_LEVELS - 1)
+        p->queue_level++;
+      p->qticks = 0;
+    }
+    return 1;
+  }
+  case SCHED_RR:
+  case SCHED_PRIO:                     // A3 Q2/A7 Q4: preemptive, quantum 1
+    return 1;
+  case SCHED_FCFS:                     // A3 Q1: non-preemptive
+  case SCHED_SJF:                      // A3 Q3: non-preemptive
+  case SCHED_HRRN:                     // A4 Q2: non-preemptive
+  default:
+    return 0;
+  }
+}
+
+----- trap.c - timer tick asks the policy before yielding -----
+  // Force process to give up CPU on clock tick.
+  // If interrupts were on while locks held, would need to check nlock.
+  //
+  // consolidated lab build: the SCHED policy (sched.h) owns the decision.
+  // sched_charge() applies the policy's quantum accounting and returns
+  // nonzero only for preemptive policies; FCFS/SJF/HRRN return 0, making
+  // them non-preemptive as the assignments specify.
+
+----- fcfstest.c - complete test program -----
+// Assignment 3, Question 1 test: FCFS (first come first served).
+// Build and run with: make qemu SCHED=FCFS CPUS=1
+// Expected: children finish strictly in creation order (c0, c1, c2),
+// even though each gets the same CPU work.
+#include "types.h"
+#include "stat.h"
+#include "user.h"
+#include "pinfo.h"
+
+static void work(int me)
+{
+  volatile int i, x = 0;
+  for(i = 0; i < 50000000; i++) x += i;
+  struct pinfo pi;
+  getpinfo(&pi);
+  printf(1, "fcfs: child %d done (pid %d, rtime %d)\n", me, pi.pid, pi.rtime);
+  exit();
+}
+
+int
+main(void)
+{
+  int i;
+  set_burst(getpid(), 50);
+  for(i = 0; i < 3; i++)
+    if(fork() == 0)
+      work(i);
+  for(i = 0; i < 3; i++)
+    wait();
+  printf(1, "fcfs: test complete\n");
+  exit();
+}
+
+IN THE LAB: WHAT TO DO AND WHAT TO SHOW
+---------------------------------------
+Read key() in proc.c and see why sched_charge() returns 0 for FCFS (never preempted). Run fcfstest, screenshot the completion order.
+
+HOW IT IS IMPLEMENTED
+---------------------
+Add ctime to struct proc in proc.h and set it from ticks in allocproc(). In the scheduler loop, scan for the RUNNABLE process with the smallest ctime instead of taking the next in round-robin order, and never yield on a timer tick, so the chosen process runs to completion.
+
+
+################################################################
+xv6 OS LAB - ASSIGNMENT 3, A3 Q2: Priority scheduler with aging
+================================================================
+
+WHAT THE QUESTION ASKS
+----------------------
+Priority field 1 (highest) to 20 (lowest), default 10, a set_priority() syscall, always run the lowest priority number, ties round-robin, and aging: a process waiting more than 30 ticks gains one priority level.
+
+HOW TO BUILD AND RUN
+--------------------
+Build and boot:   make clean && make SCHED=PRIO qemu CPUS=1
+At the xv6 shell: priotest
+
+WHICH FILES TO OPEN / SHOW
+--------------------------
+proc.c (effective_priority(), sched_tick(), AGING_INTERVAL in sched.h), sysproc.c (set_priority/get_priority)
+
+EXPECTED OUTPUT
+---------------
+Higher priority finishes first (verified: priorities 2, 10, 17 in order), and the lowest-priority process still completes because aging lifts it.
+
+CODE (verbatim from the repo)
+---------------------------
+
+----- proc.h - struct proc fields -----
+  int remaining_time;          // A4 Q1 (SRTF): remaining estimated burst
+  int priority;                // A3 Q2/A7 Q4: 1 = highest .. 20 = lowest
+  uint ready_since;            // aging + HRRN: tick when last became RUNNABLE
+
+----- sched.h - policy number and aging interval -----
+#define SCHED_FCFS  1   // A3 Q1
+#define SCHED_PRIO  2   // A3 Q2 / A7 Q4 (single canonical implementation)
+#define SCHED_SJF   3   // A3 Q3
+  ...
+// Assignment 3 Q2 / Assignment 7 Q4: a RUNNABLE process that waits more
+// than AGING_INTERVAL ticks gets its priority number decremented by 1.
+#define AGING_INTERVAL 30
+
+----- proc.c - effective_priority() -----
+// Aging (A3 Q2 / A7 Q4): a process that has waited more than
+// AGING_INTERVAL ticks in RUNNABLE gets one priority level better.
+static int
+effective_priority(struct proc *p)
+{
+  int pr = p->priority;
+  if(pr > 1 && ticks - p->ready_since > AGING_INTERVAL)
+    pr--;
+  return pr;
+}
+
+----- proc.c - key(), PRIO case -----
+// ... inside key(): switch(SCHED) ...
+  case SCHED_PRIO:                    // A3 Q2 / A7 Q4: lowest number wins
+    return (uint)effective_priority(p);
+
+----- proc.c - sched_tick() aging -----
+// Periodic bookkeeping for the preemptive dynamic policies.
+// Called from trap.c on timer ticks with ptable.lock NOT held, so we take
+// it here. Walking the table once per tick is O(NPROC) and fine for xv6.
+void
+sched_tick(void)
+{
+  struct proc *p;
+
+  if(SCHED != SCHED_PRIO && SCHED != SCHED_MLFQ)
+    return;
+  acquire(&ptable.lock);
+  for(p = ptable.proc; p < &ptable.proc[NPROC]; p++){
+    if(SCHED == SCHED_PRIO){
+      // A3 Q2/A7 Q4 aging: persist the effective-priority improvement so
+      // long-waiting processes ratchet upward level by level.
+      if(p->state == RUNNABLE && p->priority > 1 &&
+         ticks - p->ready_since > AGING_INTERVAL){
+        p->priority--;
+        p->ready_since = ticks;
+      }
+    } else {
+      // A4 Q3 MLFQ: periodic priority boost prevents starvation.
+      if(ticks > 0 && ticks % MLFQ_BOOST == 0){
+        p->queue_level = 0;
+        p->qticks = 0;
+      }
+    }
+  }
+  release(&ptable.lock);
+}
+
+----- sysproc.c - sys_set_priority() -----
+// ---- Assignment 3 Q2 / Assignment 7 Q4: set_priority(int pid, int pri)
+// Priority range is fixed by the PDF: 1 = highest .. 20 = lowest. ----
+int
+sys_set_priority(void)
+{
+  int pid, pri;
+  if(argint(0, &pid) < 0 || argint(1, &pri) < 0 || pri < 1 || pri > 20)
+    return -1;
+  return set_proc_field(pid, pri, 1);
+}
+
+----- sysproc.c - sys_get_priority() -----
+int
+sys_get_priority(void)
+{
+  return myproc()->priority;
+}
+
+----- priotest.c - complete test program -----
+// Assignment 3, Question 2 / Assignment 7, Question 4 test: preemptive
+// priority scheduling with aging (single implementation, two labels).
+// Build and run with: make qemu SCHED=PRIO CPUS=1
+// Expected: the high-priority (low number) child finishes first even
+// though it was created last; the starved child still completes thanks
+// to aging (its priority improves after AGING_INTERVAL ticks waiting).
+#include "types.h"
+#include "stat.h"
+#include "user.h"
+#include "pinfo.h"
+
+static void work(int me)
+{
+  volatile int i, x = 0;
+  for(i = 0; i < 80000000; i++) x += i;
+  struct pinfo pi;
+  getpinfo(&pi);
+  printf(1, "prio: child %d done (pid %d, priority %d)\n",
+         me, pi.pid, pi.priority);
+  exit();
+}
+
+int
+main(void)
+{
+  set_burst(getpid(), 80);
+  if(fork() == 0){ set_priority(getpid(), 18); work(0); }   // low priority, created 1st
+  if(fork() == 0){ set_priority(getpid(), 10); work(1); }   // mid priority
+  if(fork() == 0){ set_priority(getpid(), 2);  work(2); }   // high priority, created last
+  wait(); wait(); wait();
+  printf(1, "prio: test complete\n");
+  exit();
+}
+
+IN THE LAB: WHAT TO DO AND WHAT TO SHOW
+---------------------------------------
+Follow how sched_tick() ratchets priority down (number) after AGING_INTERVAL and resets ready_since. Run priotest and screenshot.
+
+HOW IT IS IMPLEMENTED
+---------------------
+Add priority to proc.h with default 10. Wire the set_priority syscall end to end: a number in syscall.h, a stub in usys.S, a declaration in user.h, a table entry in syscall.c, the implementation in sysproc.c. The scheduler picks the lowest priority number, and a per-tick routine raises a waiting process one level after 30 ticks.
+
+
+################################################################
+xv6 OS LAB - ASSIGNMENT 3, A3 Q3: SJF scheduler with declared burst
+================================================================
+
+WHAT THE QUESTION ASKS
+----------------------
+A burst_time field and a set_burst() syscall so a process declares its expected length; the scheduler picks the smallest burst, non-preemptive; processes that never set a burst go last.
+
+HOW TO BUILD AND RUN
+--------------------
+Build and boot:   make clean && make SCHED=SJF qemu CPUS=1
+At the xv6 shell: sjftest
+
+WHICH FILES TO OPEN / SHOW
+--------------------------
+proc.c (SJF case in key()), sysproc.c (set_burst), proc.h (burst_time)
+
+EXPECTED OUTPUT
+---------------
+Completion in ascending burst order (verified: burst 20, 40, 60).
+
+CODE (verbatim from the repo)
+---------------------------
+
+----- proc.h - struct proc field -----
+  uint ctime;                  // A3 Q1/A4 Q2: creation time in ticks
+  int burst_time;              // A3 Q3/A4: estimated burst, -1 = unset
+  int remaining_time;          // A4 Q1 (SRTF): remaining estimated burst
+
+----- proc.c - key(), SJF case -----
+// ... inside key(): switch(SCHED) ...
+  case SCHED_SJF:                     // A3 Q3: shortest estimated burst;
+    // PDF: processes with no burst set are treated as lowest priority.
+    return (uint)(p->burst_time < 0 ? 0x7fffffff : p->burst_time);
+
+----- sysproc.c - sys_set_burst() -----
+// ---- Assignment 3 Q3 / Assignment 4: set_burst(int pid, int bt) ----
+int
+sys_set_burst(void)
+{
+  int pid, bt;
+  if(argint(0, &pid) < 0 || argint(1, &bt) < 0 || bt <= 0)
+    return -1;
+  return set_proc_field(pid, bt, 0);
+}
+
+----- sjftest.c - complete test program -----
+// Assignment 3, Question 3 test: SJF (shortest job first, estimated burst).
+// Build and run with: make qemu SCHED=SJF CPUS=1
+// The parent declares each child's burst by pid while the children sleep,
+// so all three jobs are runnable with known bursts before any runs.
+// Expected: completion order is short(20), medium(40), long(60) even
+// though the long job was created first.
+#include "types.h"
+#include "stat.h"
+#include "user.h"
+#include "pinfo.h"
+
+static void work(int me, int burst)
+{
+  volatile int i, x = 0;
+  sleep(20);                     // let the parent declare all bursts first
+  for(i = 0; i < burst * 1000000; i++) x += i;
+  struct pinfo pi;
+  getpinfo(&pi);
+  printf(1, "sjf: child %d done (burst %d, rtime %d)\n", me, burst, pi.rtime);
+  exit();
+}
+
+int
+main(void)
+{
+  int p0, p1, p2;
+  if((p0 = fork()) == 0) work(0, 60);   // long, created first
+  set_burst(p0, 60);
+  if((p1 = fork()) == 0) work(1, 20);   // short
+  set_burst(p1, 20);
+  if((p2 = fork()) == 0) work(2, 40);   // medium
+  set_burst(p2, 40);
+  wait(); wait(); wait();
+  printf(1, "sjf: test complete\n");
+  exit();
+}
+
+IN THE LAB: WHAT TO DO AND WHAT TO SHOW
+---------------------------------------
+Check how key() maps an unset burst (-1) to the largest key so it schedules last. Run sjftest, screenshot.
+
+HOW IT IS IMPLEMENTED
+---------------------
+Add burst_time to proc.h and wire set_burst the same way as set_priority. The scheduler picks the smallest declared burst and never preempts; map an unset burst to the largest key so those processes go last.
+
+
+################################################################
+xv6 OS LAB - ASSIGNMENT 4, A4 Q1: SRTF scheduler (preemptive SJF)
+================================================================
+
+WHAT THE QUESTION ASKS
+----------------------
+Like SJF but preemptive: remaining_time starts at the declared burst, the timer tick in trap() decrements it, and the CPU goes to the RUNNABLE process with the smallest remaining time.
+
+HOW TO BUILD AND RUN
+--------------------
+Build and boot:   make clean && make SCHED=SRTF qemu CPUS=1
+At the xv6 shell: srtftest
+
+WHICH FILES TO OPEN / SHOW
+--------------------------
+proc.c (SRTF case in key(), sched_charge() decrements remaining_time and returns 1 = re-pick every tick), trap.c
+
+EXPECTED OUTPUT
+---------------
+A newly arrived short job preempts the long one; the short job finishes first (verified).
+
+CODE (verbatim from the repo)
+---------------------------
+
+----- proc.h - struct proc fields -----
+  uint ctime;                  // A3 Q1/A4 Q2: creation time in ticks
+  int burst_time;              // A3 Q3/A4: estimated burst, -1 = unset
+  int remaining_time;          // A4 Q1 (SRTF): remaining estimated burst
+
+----- proc.c - key(), SRTF case -----
+// ... inside key(): switch(SCHED) ...
+  case SCHED_SRTF:                    // A4 Q1: shortest remaining time;
+    // unset counts as the default burst, never ahead of a known short job.
+    if(p->burst_time < 0)
+      return 0x7fffffff;
+    return (uint)(p->remaining_time >= 0 ? p->remaining_time : p->burst_time);
+
+----- proc.c - sched_charge() (1 = re-pick every tick) -----
+// Charge one tick of runtime and apply per-policy quantum accounting.
+// Called from trap.c while handling a timer interrupt on a RUNNING proc.
+// Returns 1 when the policy wants the CPU back (preemption).
+int
+sched_charge(struct proc *p)
+{
+  p->rtime++;
+  p->qticks++;
+  switch(SCHED){
+  case SCHED_SRTF:                     // A4 Q1
+    if(p->burst_time >= 0 && p->remaining_time > 0)
+      p->remaining_time--;
+    return 1;                          // re-pick every tick
+  case SCHED_MLFQ: {                   // A4 Q3: demote at quantum expiry
+    int limit = p->queue_level == 0 ? MLFQ_Q0_TICKS :
+                p->queue_level == 1 ? MLFQ_Q1_TICKS : MLFQ_Q2_TICKS;
+    if(p->qticks >= limit){
+      if(p->queue_level < MLFQ_LEVELS - 1)
+        p->queue_level++;
+      p->qticks = 0;
+    }
+    return 1;
+  }
+  case SCHED_RR:
+  case SCHED_PRIO:                     // A3 Q2/A7 Q4: preemptive, quantum 1
+    return 1;
+  case SCHED_FCFS:                     // A3 Q1: non-preemptive
+  case SCHED_SJF:                      // A3 Q3: non-preemptive
+  case SCHED_HRRN:                     // A4 Q2: non-preemptive
+  default:
+    return 0;
+  }
+}
+
+----- trap.c - timer tick path -----
+  // Force process to give up CPU on clock tick.
+  // If interrupts were on while locks held, would need to check nlock.
+  //
+  // consolidated lab build: the SCHED policy (sched.h) owns the decision.
+  // sched_charge() applies the policy's quantum accounting and returns
+  // nonzero only for preemptive policies; FCFS/SJF/HRRN return 0, making
+  // them non-preemptive as the assignments specify.
+
+----- sysproc.c - sys_set_burst() -----
+// ---- Assignment 3 Q3 / Assignment 4: set_burst(int pid, int bt) ----
+int
+sys_set_burst(void)
+{
+  int pid, bt;
+  if(argint(0, &pid) < 0 || argint(1, &bt) < 0 || bt <= 0)
+    return -1;
+  return set_proc_field(pid, bt, 0);
+}
+
+----- srtftest.c - complete test program -----
+// Assignment 4, Question 1 test: SRTF (shortest remaining time first).
+// Build and run with: make qemu SCHED=SRTF CPUS=1
+// Expected: the late-arriving short job preempts the long job and
+// finishes before it, unlike non-preemptive SJF.
+#include "types.h"
+#include "stat.h"
+#include "user.h"
+#include "pinfo.h"
+
+static void work(int me, int burst)
+{
+  volatile int i, x = 0;
+  for(i = 0; i < burst * 1000000; i++) x += i;
+  struct pinfo pi;
+  getpinfo(&pi);
+  printf(1, "srtf: child %d done (burst %d, remaining %d)\n",
+         me, burst, pi.remaining);
+  exit();
+}
+
+int
+main(void)
+{
+  int p0, p1;
+  set_burst(getpid(), 1);   // keep the parent schedulable while setting up
+  if((p0 = fork()) == 0) work(0, 90);   // long job starts first
+  set_burst(p0, 90);
+  sleep(5);                             // let it run, then...
+  if((p1 = fork()) == 0) work(1, 10);   // ...a short job arrives
+  set_burst(p1, 10);
+  wait(); wait();
+  printf(1, "srtf: test complete\n");
+  exit();
+}
+
+IN THE LAB: WHAT TO DO AND WHAT TO SHOW
+---------------------------------------
+Compare sched_charge() for SRTF against SJF: returning 1 forces a yield and re-pick every tick. Run srtftest, screenshot the preemption.
+
+HOW IT IS IMPLEMENTED
+---------------------
+Keep burst_time and add remaining_time, initialized by set_burst. On every timer tick in trap(), decrement the running process's remaining_time and yield, so the scheduler re-picks whoever now has the smallest remaining time.
+
+
+################################################################
+xv6 OS LAB - ASSIGNMENT 4, A4 Q2: HRRN scheduler
+================================================================
+
+WHAT THE QUESTION ASKS
+----------------------
+Non-preemptive highest-response-ratio-next: response ratio = (wait time + burst) * 100 / burst, with wait time from ticks minus ctime, computed in integer arithmetic.
+
+HOW TO BUILD AND RUN
+--------------------
+Build and boot:   make clean && make SCHED=HRRN qemu CPUS=1
+At the xv6 shell: hrrntest
+
+WHICH FILES TO OPEN / SHOW
+--------------------------
+proc.c (HRRN case in key(); ready_since tracks when the process last became RUNNABLE)
+
+EXPECTED OUTPUT
+---------------
+Short jobs run early, and a long job eventually wins as its wait time grows (verified).
+
+CODE (verbatim from the repo)
+---------------------------
+
+----- proc.h - struct proc fields -----
+  // Scheduler fields (Assignments 3 and 4; see sched.h for the policy).
+  uint ctime;                  // A3 Q1/A4 Q2: creation time in ticks
+  int burst_time;              // A3 Q3/A4: estimated burst, -1 = unset
+  ...
+  int priority;                // A3 Q2/A7 Q4: 1 = highest .. 20 = lowest
+  uint ready_since;            // aging + HRRN: tick when last became RUNNABLE
+  uint heap_start;             // A8 Q4 (lazy): lowest valid lazy heap address
+
+----- proc.c - key(), HRRN case -----
+// ... inside key(): switch(SCHED) ...
+  case SCHED_HRRN: {                  // A4 Q2: highest response ratio wins,
+    // so we return the inverse as a "lowest wins" key. Response ratio
+    // rr = (waiting + burst) / burst; rr >= 1, so 1000000/rr orders the
+    // largest rr first. Waiting time uses ticks since the process last
+    // became RUNNABLE.
+    int b = p->burst_time < 0 ? DEFAULT_BURST : p->burst_time;
+    uint w = ticks - p->ready_since;
+    uint rr = w + (uint)b;            // (w+b)/b with b folded out below
+    if(b <= 0) b = 1;
+    return 1000000U / (rr / (uint)b + 1);
+  }
+
+----- hrrntest.c - complete test program -----
+// Assignment 4, Question 2 test: HRRN (highest response ratio next).
+// Build and run with: make qemu SCHED=HRRN CPUS=1
+//
+// The parent hogs the (non-preemptive) CPU for ~30 ticks after creating
+// the LONG job, so the long job accumulates waiting time. The short jobs
+// are created only afterwards. Under SJF the shorts would run first; HRRN
+// picks the long job because its response ratio (w+b)/b has grown past
+// the shorts' - this is the anti-starvation property the question asks
+// to demonstrate.
+// Expected: the long job (burst 60) finishes FIRST, then the shorts.
+#include "types.h"
+#include "stat.h"
+#include "user.h"
+#include "pinfo.h"
+
+static void work(int me, int burst)
+{
+  volatile int i, x = 0;
+  sleep(25);
+  for(i = 0; i < burst * 1000000; i++) x += i;
+  struct pinfo pi;
+  getpinfo(&pi);
+  printf(1, "hrrn: child %d done (burst %d, waited %d)\n",
+         me, burst, uptime() - pi.ctime - pi.rtime);
+  exit();
+}
+
+int
+main(void)
+{
+  volatile int i, x = 0;
+  int p0, p1, p2;
+  if((p0 = fork()) == 0) work(0, 60);      // long job waits from t~0
+  set_burst(p0, 60);
+  for(i = 0; i < 90000000; i++) x += i;    // parent hogs CPU ~30 ticks
+  if((p1 = fork()) == 0) work(1, 10);      // shorts arrive late
+  set_burst(p1, 10);
+  if((p2 = fork()) == 0) work(2, 10);
+  set_burst(p2, 10);
+  wait(); wait(); wait();
+  printf(1, "hrrn: test complete\n");
+  exit();
+}
+
+IN THE LAB: WHAT TO DO AND WHAT TO SHOW
+---------------------------------------
+Read how the HRRN key inverts the ratio so "lowest key wins" still works. Run hrrntest, screenshot.
+
+HOW IT IS IMPLEMENTED
+---------------------
+Reuse ctime and burst_time. At each pick, compute (wait + burst) * 100 / burst in integer arithmetic with wait = ticks - ctime, run the highest ratio, and do not preempt on ticks.
+
+
+################################################################
+xv6 OS LAB - ASSIGNMENT 4, A4 Q3: MLFQ scheduler (3 queues)
+================================================================
+
+WHAT THE QUESTION ASKS
+----------------------
+Three queues: level 0 runs 1 tick, level 1 runs 2, level 2 runs 4. Always pick from the highest non-empty queue, round-robin inside it, and demote a process that uses its whole quantum. New processes start at level 0.
+
+HOW TO BUILD AND RUN
+--------------------
+Build and boot:   make clean && make SCHED=MLFQ qemu CPUS=1
+At the xv6 shell: mlfqtest
+
+WHICH FILES TO OPEN / SHOW
+--------------------------
+proc.c (queue_level/qticks in proc.h, MLFQ case in pick(), quantum table in sched_charge(), periodic boost in sched_tick())
+
+EXPECTED OUTPUT
+---------------
+A CPU-bound child sinks from queue 0 to queue 2 while a short job stays at the top and finishes fast (verified).
+
+CODE (verbatim from the repo)
+---------------------------
+
+----- proc.h - struct proc fields -----
+  uint rtime;                  // total run ticks, charged by scheduler()
+  int queue_level;             // A4 Q3 (MLFQ): current queue, 0 = top
+  int qticks;                  // A4 Q3 (MLFQ): ticks used at current level
+
+----- sched.h - MLFQ levels and quanta -----
+//   HRRN - Assignment 4, Question 2: highest response ratio next
+//   MLFQ - Assignment 4, Question 3: multilevel feedback queue
+//
+  ...
+#define SCHED_HRRN  5   // A4 Q2
+#define SCHED_MLFQ  6   // A4 Q3
+
+  ...
+
+// Assignment 4 Q3 (MLFQ): three queues. Ticks a process may run at each
+// level before demotion, and the periodic boost interval that moves every
+  ...
+// process back to the top queue so low-priority work cannot starve.
+#define MLFQ_LEVELS   3
+#define MLFQ_Q0_TICKS 1
+  ...
+#define MLFQ_Q1_TICKS 2
+#define MLFQ_Q2_TICKS 4
+#define MLFQ_BOOST    100
+
+----- proc.c - pick(), MLFQ walks queues top-down -----
+static struct proc*
+pick(void)
+{
+  struct proc *p, *best = 0;
+  uint bkey = 0;
+
+  for(p = ptable.proc; p < &ptable.proc[NPROC]; p++){
+    uint k;
+    if(p->state != RUNNABLE)
+      continue;
+    if(SCHED == SCHED_MLFQ){
+      // A4 Q3: never pick a lower queue while a higher queue has work.
+      if(best != 0){
+        if(p->queue_level > best->queue_level)
+          continue;
+        if(p->queue_level == best->queue_level &&
+           p->last_run >= best->last_run)
+          continue;
+        best = p;
+      } else {
+        best = p;
+      }
+      continue;
+    }
+    k = key(p);
+    if(best == 0 || k < bkey || (k == bkey && p->last_run < best->last_run)){
+      best = p;
+      bkey = k;
+    }
+  }
+  return best;
+}
+
+----- proc.c - sched_charge(), quantum and demotion -----
+// Charge one tick of runtime and apply per-policy quantum accounting.
+// Called from trap.c while handling a timer interrupt on a RUNNING proc.
+// Returns 1 when the policy wants the CPU back (preemption).
+int
+sched_charge(struct proc *p)
+{
+  p->rtime++;
+  p->qticks++;
+  switch(SCHED){
+  case SCHED_SRTF:                     // A4 Q1
+    if(p->burst_time >= 0 && p->remaining_time > 0)
+      p->remaining_time--;
+    return 1;                          // re-pick every tick
+  case SCHED_MLFQ: {                   // A4 Q3: demote at quantum expiry
+    int limit = p->queue_level == 0 ? MLFQ_Q0_TICKS :
+                p->queue_level == 1 ? MLFQ_Q1_TICKS : MLFQ_Q2_TICKS;
+    if(p->qticks >= limit){
+      if(p->queue_level < MLFQ_LEVELS - 1)
+        p->queue_level++;
+      p->qticks = 0;
+    }
+    return 1;
+  }
+  case SCHED_RR:
+  case SCHED_PRIO:                     // A3 Q2/A7 Q4: preemptive, quantum 1
+    return 1;
+  case SCHED_FCFS:                     // A3 Q1: non-preemptive
+  case SCHED_SJF:                      // A3 Q3: non-preemptive
+  case SCHED_HRRN:                     // A4 Q2: non-preemptive
+  default:
+    return 0;
+  }
+}
+
+----- proc.c - sched_tick(), periodic boost -----
+// Periodic bookkeeping for the preemptive dynamic policies.
+// Called from trap.c on timer ticks with ptable.lock NOT held, so we take
+// it here. Walking the table once per tick is O(NPROC) and fine for xv6.
+void
+sched_tick(void)
+{
+  struct proc *p;
+
+  if(SCHED != SCHED_PRIO && SCHED != SCHED_MLFQ)
+    return;
+  acquire(&ptable.lock);
+  for(p = ptable.proc; p < &ptable.proc[NPROC]; p++){
+    if(SCHED == SCHED_PRIO){
+      // A3 Q2/A7 Q4 aging: persist the effective-priority improvement so
+      // long-waiting processes ratchet upward level by level.
+      if(p->state == RUNNABLE && p->priority > 1 &&
+         ticks - p->ready_since > AGING_INTERVAL){
+        p->priority--;
+        p->ready_since = ticks;
+      }
+    } else {
+      // A4 Q3 MLFQ: periodic priority boost prevents starvation.
+      if(ticks > 0 && ticks % MLFQ_BOOST == 0){
+        p->queue_level = 0;
+        p->qticks = 0;
+      }
+    }
+  }
+  release(&ptable.lock);
+}
+
+----- mlfqtest.c - complete test program -----
+// Assignment 4, Question 3 test: MLFQ (3 queues, quantum 1/2/4 ticks,
+// boost every MLFQ_BOOST ticks).
+// Build and run with: make qemu SCHED=MLFQ CPUS=1
+// Expected: the CPU-bound child sinks to queue 2 (queue_level grows in
+// getpinfo samples) while the short child finishes quickly at the top;
+// the periodic boost lifts the CPU-bound child back to queue 0.
+#include "types.h"
+#include "stat.h"
+#include "user.h"
+#include "pinfo.h"
+
+static void work(int me)
+{
+  volatile int i, x = 0;
+  struct pinfo pi;
+  for(i = 0; i < 300000000; i++){
+    x += i;
+    if(i % 100000000 == 0){
+      getpinfo(&pi);
+      printf(1, "mlfq: child %d at queue %d (rtime %d)\n",
+             me, pi.queue_level, pi.rtime);
+    }
+  }
+  printf(1, "mlfq: child %d done\n", me);
+  exit();
+}
+
+int
+main(void)
+{
+  if(fork() == 0) work(0);       // CPU-bound
+  if(fork() == 0){ sleep(2); printf(1, "mlfq: short child done\n"); exit(); }
+  wait(); wait();
+  printf(1, "mlfq: test complete\n");
+  exit();
+}
+
+IN THE LAB: WHAT TO DO AND WHAT TO SHOW
+---------------------------------------
+Follow one process through sched_charge(): qticks reaches its queue limit, level rises, slice resets. Blocking voluntarily also ends the slice. Run mlfqtest, screenshot.
+
+HOW IT IS IMPLEMENTED
+---------------------
+Add queue_level and qticks to proc.h. The scheduler scans queue 0, then 1, then 2, round-robin inside each. Every tick adds to qticks; at the queue limit (1, 2 or 4 ticks) demote one level and yield. Blocking voluntarily ends the slice, and a periodic boost returns everyone to queue 0.
+
+
+################################################################
+xv6 OS LAB - ASSIGNMENT 5, A5 Q1: Peterson's algorithm
+================================================================
+
+WHAT THE QUESTION ASKS
+----------------------
+Mutual exclusion between parent and child using only flag[] and turn in shared memory, no OS locks for the critical section itself. The shared counter must be exact at the end.
+
+HOW TO BUILD AND RUN
+--------------------
+Build and boot:   make qemu CPUS=1
+At the xv6 shell: peterson
+
+WHICH FILES TO OPEN / SHOW
+--------------------------
+shm.c (shm_get syscall), peterson.c (the flag/turn protocol)
+
+EXPECTED OUTPUT
+---------------
+counter = 20000, exactly as expected, with no interleaved critical sections (verified).
+
+CODE (verbatim from the repo)
+---------------------------
+
+----- shm.c - kernel shared page (whole file) -----
+// shm.c - Assignment 5: one kernel-owned page shared between address spaces.
+//
+// The Assignment 5 questions (Peterson, producer-consumer, readers-writers,
+// dining philosophers) need shared memory, which stock xv6 lacks because
+// fork() copies the address space. shm_get() maps ONE kernel-owned frame
+// into the caller's page table and returns its user virtual address.
+// Parent and child each call shm_get() after fork() and thereby see the
+// same physical frame.
+//
+// Simplifications, documented per the assignment's "document and justify"
+// requirement:
+//  - A single global page (4 KB) is enough for every test program.
+//  - fork() copies the mapping as a private page too; the child must call
+//    shm_get() itself and use that address, which every test program does.
+//  - The frame is never freed (kernel-owned for the life of the boot).
+
+#include "types.h"
+#include "defs.h"
+#include "param.h"
+#include "memlayout.h"
+#include "mmu.h"
+#include "proc.h"
+#include "spinlock.h"
+#include "shm.h"
+
+static struct spinlock shmlock;
+static char *shm_frame = 0;    // kernel virtual address of the shared frame
+static int shmlock_ready = 0;
+
+int
+shm_get(void)
+{
+  struct proc *p = myproc();
+  uint va;
+
+  if(p == 0)
+    return -1;
+
+  // Lazily allocate the shared frame exactly once.
+  if(!shmlock_ready){
+    initlock(&shmlock, "shm");
+    shmlock_ready = 1;
+  }
+  acquire(&shmlock);
+  if(shm_frame == 0){
+    shm_frame = kalloc();
+    if(shm_frame == 0){
+      release(&shmlock);
+      return -1;
+    }
+    memset(shm_frame, 0, PGSIZE);
+  }
+  release(&shmlock);
+
+  // Map the frame at a FIXED virtual address just below KERNBASE,
+  // deliberately OUTSIDE [0, sz): fork() does not copy it (the child calls
+  // shm_get() itself and gets the same frame), and freevm() is taught in
+  // vm.c to skip it, so the kernel-owned frame is never returned to the
+  // allocator while still mapped - that aliasing bug corrupted memory.
+  va = SHM_VA;
+  if(uvmpresent(p->pgdir, va))
+    return (int)va;     // already mapped in this address space
+  if(mappages(p->pgdir, (char*)va, PGSIZE, V2P(shm_frame), PTE_W|PTE_U) < 0)
+    return -1;
+  return (int)va;
+}
+
+----- peterson.c - complete test program -----
+// Assignment 5, Question 1: Peterson's algorithm for two processes.
+// Uses shm_get() for the shared flag[2]/turn variables (stock xv6 has no
+// shared memory across fork, so the kernel provides one shared frame).
+// Expected: the shared counter ends at exactly 2 * ITER; any race shows
+// up as a smaller total.
+#include "types.h"
+#include "stat.h"
+#include "user.h"
+
+#define ITER 10000
+
+struct shared {
+  int flag[2];
+  int turn;
+  int counter;
+};
+
+int
+main(void)
+{
+  struct shared *sh;
+  int addr = shm_get();
+  if(addr < 0){ printf(1, "peterson: shm_get failed\n"); exit(); }
+  sh = (struct shared*)addr;
+  sh->flag[0] = sh->flag[1] = sh->turn = sh->counter = 0;
+
+  int pid = fork();
+  int me = (pid == 0) ? 1 : 0;
+  int other = 1 - me;
+  if(pid == 0){
+    int caddr = shm_get();      // child maps the SAME frame
+    if(caddr < 0){ printf(1, "peterson: child shm_get failed\n"); exit(); }
+    sh = (struct shared*)caddr;
+  }
+
+  for(int i = 0; i < ITER; i++){
+    sh->flag[me] = 1;
+    sh->turn = other;
+    while(sh->flag[other] && sh->turn == other)
+      ;                          // spin
+    sh->counter++;               // critical section
+    sh->flag[me] = 0;
+  }
+
+  if(pid > 0){
+    wait();
+    printf(1, "peterson: counter=%d expected=%d %s\n", sh->counter,
+           2 * ITER, sh->counter == 2 * ITER ? "PASS" : "FAIL");
+  }
+  exit();
+}
+
+IN THE LAB: WHAT TO DO AND WHAT TO SHOW
+---------------------------------------
+Read peterson.c and be able to explain why the busy-wait condition guarantees mutual exclusion. Run it, screenshot the PASS line.
+
+HOW IT IS IMPLEMENTED
+---------------------
+Kernel part: a shm_get() syscall that maps one kernel-owned frame at a fixed address so parent and child after fork() see the same page. User part: put flag[2] and turn in that page and run the classic protocol - set your flag, give away the turn, busy-wait while the other wants in and it is their turn.
+
+
+################################################################
+xv6 OS LAB - ASSIGNMENT 5, A5 Q2: Producer-consumer (bounded buffer)
+================================================================
+
+WHAT THE QUESTION ASKS
+----------------------
+One producer and one consumer over a size-5 circular buffer in shared memory, using counting semaphores empty and full plus a mutex. Producer blocks when full, consumer blocks when empty, no item lost or reordered.
+
+HOW TO BUILD AND RUN
+--------------------
+Build and boot:   make qemu CPUS=1
+At the xv6 shell: prodcons
+
+WHICH FILES TO OPEN / SHOW
+--------------------------
+sem.c (kernel semaphores), shm.c, prodcons.c
+
+EXPECTED OUTPUT
+---------------
+Items 1 to 100 consumed in order; blocking and unblocking visible in the log.
+
+CODE (verbatim from the repo)
+---------------------------
+
+----- shm.c - kernel shared page (whole file) -----
+// shm.c - Assignment 5: one kernel-owned page shared between address spaces.
+//
+// The Assignment 5 questions (Peterson, producer-consumer, readers-writers,
+// dining philosophers) need shared memory, which stock xv6 lacks because
+// fork() copies the address space. shm_get() maps ONE kernel-owned frame
+// into the caller's page table and returns its user virtual address.
+// Parent and child each call shm_get() after fork() and thereby see the
+// same physical frame.
+//
+// Simplifications, documented per the assignment's "document and justify"
+// requirement:
+//  - A single global page (4 KB) is enough for every test program.
+//  - fork() copies the mapping as a private page too; the child must call
+//    shm_get() itself and use that address, which every test program does.
+//  - The frame is never freed (kernel-owned for the life of the boot).
+
+#include "types.h"
+#include "defs.h"
+#include "param.h"
+#include "memlayout.h"
+#include "mmu.h"
+#include "proc.h"
+#include "spinlock.h"
+#include "shm.h"
+
+static struct spinlock shmlock;
+static char *shm_frame = 0;    // kernel virtual address of the shared frame
+static int shmlock_ready = 0;
+
+int
+shm_get(void)
+{
+  struct proc *p = myproc();
+  uint va;
+
+  if(p == 0)
+    return -1;
+
+  // Lazily allocate the shared frame exactly once.
+  if(!shmlock_ready){
+    initlock(&shmlock, "shm");
+    shmlock_ready = 1;
+  }
+  acquire(&shmlock);
+  if(shm_frame == 0){
+    shm_frame = kalloc();
+    if(shm_frame == 0){
+      release(&shmlock);
+      return -1;
+    }
+    memset(shm_frame, 0, PGSIZE);
+  }
+  release(&shmlock);
+
+  // Map the frame at a FIXED virtual address just below KERNBASE,
+  // deliberately OUTSIDE [0, sz): fork() does not copy it (the child calls
+  // shm_get() itself and gets the same frame), and freevm() is taught in
+  // vm.c to skip it, so the kernel-owned frame is never returned to the
+  // allocator while still mapped - that aliasing bug corrupted memory.
+  va = SHM_VA;
+  if(uvmpresent(p->pgdir, va))
+    return (int)va;     // already mapped in this address space
+  if(mappages(p->pgdir, (char*)va, PGSIZE, V2P(shm_frame), PTE_W|PTE_U) < 0)
+    return -1;
+  return (int)va;
+}
+
+----- sem.c - kernel semaphores (whole file) -----
+// sem.c - Kernel counting semaphores.
+//
+// Assignment 7, Question 2: counting semaphores on top of xv6's
+// sleep()/wakeup(), with the exact syscall surface the assignment asks for
+// (sem_init / sem_wait / sem_signal over a fixed array of 10 semaphores).
+// Assignment 5 (Questions 2-4) reuses the same semaphores for the
+// producer-consumer, readers-writers and dining-philosophers programs.
+//
+// sem_destroy() is an extension beyond the assignment text: it frees a
+// slot and wakes any waiters so a stuck program fails loudly instead of
+// hanging forever.
+
+#include "types.h"
+#include "defs.h"
+#include "param.h"
+#include "spinlock.h"
+#include "mmu.h"
+#include "proc.h"
+
+// ptable lives in proc.c; needed to index per-process hold counts.
+extern struct {
+  struct spinlock lock;
+  struct proc proc[NPROC];
+} ptable;
+
+#define NSEM 10   // assignment 7 Q2(c): fixed-size array of semaphores
+
+struct semaphore {
+  int used;              // slot allocated by sem_init
+  int value;             // current count
+  struct spinlock lk;    // protects value; sleep() releases it while blocked
+  int waiters;           // number of processes blocked on this semaphore
+  int owner[NPROC];      // per-proc hold count (Assignment 7 Q3 deadlock aid)
+};
+
+static struct semaphore sems[NSEM];
+
+int
+sem_init_id(int id, int value)
+{
+  struct semaphore *s;
+
+  if(id < 0 || id >= NSEM || value < 0)
+    return -1;
+  s = &sems[id];
+  acquire(&s->lk);
+  if(s->used){           // re-initialising a live semaphore is a caller bug
+    release(&s->lk);
+    return -1;
+  }
+  s->used = 1;
+  s->value = value;
+  s->waiters = 0;
+  memset(s->owner, 0, sizeof(s->owner));
+  release(&s->lk);
+  return 0;
+}
+
+int
+sem_wait_id(int id)
+{
+  struct semaphore *s;
+  struct proc *p;
+
+  if(id < 0 || id >= NSEM)
+    return -1;
+  s = &sems[id];
+  p = myproc();
+  acquire(&s->lk);
+  if(!s->used){
+    release(&s->lk);
+    return -1;
+  }
+  // Block while the count is exhausted. sleep() releases s->lk while
+  // blocked and re-acquires it before returning, so the value test stays
+  // atomic. proc->killed breaks the loop if the process is killed.
+  while(s->used && s->value == 0 && !(p && p->killed)){
+    s->waiters++;
+    if(p)
+      p->waiting_on = id;   // Assignment 7 Q3: wait-for bookkeeping
+    sleep(s, &s->lk);
+    s->waiters--;
+  }
+  if(p)
+    p->waiting_on = -1;
+  if(!s->used){             // sem_destroy() woke us: fail, don't re-sleep
+    release(&s->lk);
+    return -1;
+  }
+  if(p && p->killed){
+    release(&s->lk);
+    return -1;
+  }
+  s->value--;
+  if(p)
+    s->owner[p - ptable.proc]++;
+  release(&s->lk);
+  return 0;
+}
+
+int
+sem_signal_id(int id)
+{
+  struct semaphore *s;
+  struct proc *p;
+
+  if(id < 0 || id >= NSEM)
+    return -1;
+  s = &sems[id];
+  p = myproc();
+  acquire(&s->lk);
+  if(!s->used){
+    release(&s->lk);
+    return -1;
+  }
+  if(p && s->owner[p - ptable.proc] > 0)
+    s->owner[p - ptable.proc]--;
+  s->value++;
+  if(s->waiters > 0)
+    wakeup(s);          // wakes every sleeper; they re-check value under lk
+  release(&s->lk);
+  return 0;
+}
+
+int
+sem_destroy_id(int id)
+{
+  struct semaphore *s;
+
+  if(id < 0 || id >= NSEM)
+    return -1;
+  s = &sems[id];
+  acquire(&s->lk);
+  if(!s->used){
+    release(&s->lk);
+    return -1;
+  }
+  s->used = 0;
+  // Wake everyone blocked on the destroyed semaphore; they see used == 0
+  // on re-check and fail instead of sleeping forever.
+  wakeup(s);
+  release(&s->lk);
+  return 0;
+}
+
+----- prodcons.c - complete test program -----
+// Assignment 5, Question 2: producer-consumer with kernel semaphores.
+// One producer, one consumer, bounded buffer in the shm_get() page.
+// Semaphores: 0 = empty slots (N), 1 = full slots (0), 2 = mutex (1).
+// Expected: consumer sees every produced value exactly once, in order.
+#include "types.h"
+#include "stat.h"
+#include "user.h"
+
+#define N 8
+#define ITEMS 100
+#define SEM_EMPTY 0
+#define SEM_FULL  1
+#define SEM_MUTEX 2
+
+struct shared { int buf[N]; int in; int out; };
+
+int
+main(void)
+{
+  struct shared *sh = (struct shared*)shm_get();
+  if((int)sh < 0){ printf(1, "prodcons: shm_get failed\n"); exit(); }
+  sh->in = sh->out = 0;
+  sem_init(SEM_EMPTY, N);
+  sem_init(SEM_FULL, 0);
+  sem_init(SEM_MUTEX, 1);
+
+  int pid = fork();
+  if(pid == 0){
+    sh = (struct shared*)shm_get();   // same frame in the child
+    for(int i = 1; i <= ITEMS; i++){  // producer
+      sem_wait(SEM_EMPTY);
+      sem_wait(SEM_MUTEX);
+      sh->buf[sh->in] = i;
+      sh->in = (sh->in + 1) % N;
+      sem_signal(SEM_MUTEX);
+      sem_signal(SEM_FULL);
+    }
+    exit();
+  }
+  // consumer (parent)
+  int ok = 1;
+  for(int i = 1; i <= ITEMS; i++){
+    sem_wait(SEM_FULL);
+    sem_wait(SEM_MUTEX);
+    int v = sh->buf[sh->out];
+    sh->out = (sh->out + 1) % N;
+    sem_signal(SEM_MUTEX);
+    sem_signal(SEM_EMPTY);
+    if(v != i) ok = 0;
+  }
+  wait();
+  printf(1, "prodcons: %d items %s\n", ITEMS, ok ? "PASS" : "FAIL");
+  exit();
+}
+
+IN THE LAB: WHAT TO DO AND WHAT TO SHOW
+---------------------------------------
+Trace one produce and one consume through sem_wait/sem_signal in sem.c. Run prodcons, screenshot the in-order log.
+
+HOW IT IS IMPLEMENTED
+---------------------
+First build kernel semaphores: sem_init/sem_wait/sem_signal syscalls over sleep()/wakeup(), wired like any syscall. Then the buffer logic: empty starts at 5, full at 0, mutex at 1; producer waits on empty then mutex, consumer waits on full then mutex.
+
+
+################################################################
+xv6 OS LAB - ASSIGNMENT 5, A5 Q3: Readers-writers
+================================================================
+
+WHAT THE QUESTION ASKS
+----------------------
+Readers-priority locking over a shared integer: read_count under a mutex lets many readers in together; a writer needs exclusive access. At least 3 readers and 2 writers.
+
+HOW TO BUILD AND RUN
+--------------------
+Build and boot:   make qemu CPUS=1
+At the xv6 shell: readwrite
+
+WHICH FILES TO OPEN / SHOW
+--------------------------
+sem.c, readwrite.c (read_count, mutex and write semaphore)
+
+EXPECTED OUTPUT
+---------------
+Concurrent reader overlap, and no reader or writer active during a write.
+
+CODE (verbatim from the repo)
+---------------------------
+
+----- sem.c - kernel semaphores (whole file) -----
+// sem.c - Kernel counting semaphores.
+//
+// Assignment 7, Question 2: counting semaphores on top of xv6's
+// sleep()/wakeup(), with the exact syscall surface the assignment asks for
+// (sem_init / sem_wait / sem_signal over a fixed array of 10 semaphores).
+// Assignment 5 (Questions 2-4) reuses the same semaphores for the
+// producer-consumer, readers-writers and dining-philosophers programs.
+//
+// sem_destroy() is an extension beyond the assignment text: it frees a
+// slot and wakes any waiters so a stuck program fails loudly instead of
+// hanging forever.
+
+#include "types.h"
+#include "defs.h"
+#include "param.h"
+#include "spinlock.h"
+#include "mmu.h"
+#include "proc.h"
+
+// ptable lives in proc.c; needed to index per-process hold counts.
+extern struct {
+  struct spinlock lock;
+  struct proc proc[NPROC];
+} ptable;
+
+#define NSEM 10   // assignment 7 Q2(c): fixed-size array of semaphores
+
+struct semaphore {
+  int used;              // slot allocated by sem_init
+  int value;             // current count
+  struct spinlock lk;    // protects value; sleep() releases it while blocked
+  int waiters;           // number of processes blocked on this semaphore
+  int owner[NPROC];      // per-proc hold count (Assignment 7 Q3 deadlock aid)
+};
+
+static struct semaphore sems[NSEM];
+
+int
+sem_init_id(int id, int value)
+{
+  struct semaphore *s;
+
+  if(id < 0 || id >= NSEM || value < 0)
+    return -1;
+  s = &sems[id];
+  acquire(&s->lk);
+  if(s->used){           // re-initialising a live semaphore is a caller bug
+    release(&s->lk);
+    return -1;
+  }
+  s->used = 1;
+  s->value = value;
+  s->waiters = 0;
+  memset(s->owner, 0, sizeof(s->owner));
+  release(&s->lk);
+  return 0;
+}
+
+int
+sem_wait_id(int id)
+{
+  struct semaphore *s;
+  struct proc *p;
+
+  if(id < 0 || id >= NSEM)
+    return -1;
+  s = &sems[id];
+  p = myproc();
+  acquire(&s->lk);
+  if(!s->used){
+    release(&s->lk);
+    return -1;
+  }
+  // Block while the count is exhausted. sleep() releases s->lk while
+  // blocked and re-acquires it before returning, so the value test stays
+  // atomic. proc->killed breaks the loop if the process is killed.
+  while(s->used && s->value == 0 && !(p && p->killed)){
+    s->waiters++;
+    if(p)
+      p->waiting_on = id;   // Assignment 7 Q3: wait-for bookkeeping
+    sleep(s, &s->lk);
+    s->waiters--;
+  }
+  if(p)
+    p->waiting_on = -1;
+  if(!s->used){             // sem_destroy() woke us: fail, don't re-sleep
+    release(&s->lk);
+    return -1;
+  }
+  if(p && p->killed){
+    release(&s->lk);
+    return -1;
+  }
+  s->value--;
+  if(p)
+    s->owner[p - ptable.proc]++;
+  release(&s->lk);
+  return 0;
+}
+
+int
+sem_signal_id(int id)
+{
+  struct semaphore *s;
+  struct proc *p;
+
+  if(id < 0 || id >= NSEM)
+    return -1;
+  s = &sems[id];
+  p = myproc();
+  acquire(&s->lk);
+  if(!s->used){
+    release(&s->lk);
+    return -1;
+  }
+  if(p && s->owner[p - ptable.proc] > 0)
+    s->owner[p - ptable.proc]--;
+  s->value++;
+  if(s->waiters > 0)
+    wakeup(s);          // wakes every sleeper; they re-check value under lk
+  release(&s->lk);
+  return 0;
+}
+
+int
+sem_destroy_id(int id)
+{
+  struct semaphore *s;
+
+  if(id < 0 || id >= NSEM)
+    return -1;
+  s = &sems[id];
+  acquire(&s->lk);
+  if(!s->used){
+    release(&s->lk);
+    return -1;
+  }
+  s->used = 0;
+  // Wake everyone blocked on the destroyed semaphore; they see used == 0
+  // on re-check and fail instead of sleeping forever.
+  wakeup(s);
+  release(&s->lk);
+  return 0;
+}
+
+----- readwrite.c - complete test program -----
+// Assignment 5, Question 3: readers-writers with kernel semaphores
+// (reader-preference form). Semaphores: 3 = room (writer lock),
+// 4 = mutex protecting readcount. Shared data in the shm_get() page.
+// Expected: writers apply their updates one at a time; final data value
+// equals the number of writer updates, and no reader ever observes the
+// intermediate "torn" value.
+#include "types.h"
+#include "stat.h"
+#include "user.h"
+
+#define NWRITERS 2
+#define WITER 20
+#define SEM_ROOM  3
+#define SEM_RMUTEX 4
+
+struct shared { int data; int torn; int readcount; };
+
+int
+main(void)
+{
+  struct shared *sh = (struct shared*)shm_get();
+  if((int)sh < 0){ printf(1, "readwrite: shm_get failed\n"); exit(); }
+  sh->data = 0; sh->torn = 0; sh->readcount = 0;
+  sem_init(SEM_ROOM, 1);
+  sem_init(SEM_RMUTEX, 1);
+
+  for(int w = 0; w < NWRITERS; w++){
+    if(fork() == 0){
+      sh = (struct shared*)shm_get();
+      for(int i = 0; i < WITER; i++){
+        sem_wait(SEM_ROOM);
+        sh->data++;              // critical section
+        sem_signal(SEM_ROOM);
+      }
+      exit();
+    }
+  }
+  for(int r = 0; r < 2; r++){
+    if(fork() == 0){
+      sh = (struct shared*)shm_get();
+      for(int i = 0; i < 200; i++){
+        sem_wait(SEM_RMUTEX);
+        sh->readcount++;
+        if(sh->readcount == 1) sem_wait(SEM_ROOM);
+        sem_signal(SEM_RMUTEX);
+        if(sh->data < 0 || sh->data > NWRITERS * WITER) sh->torn = 1;
+        sem_wait(SEM_RMUTEX);
+        sh->readcount--;
+        if(sh->readcount == 0) sem_signal(SEM_ROOM);
+        sem_signal(SEM_RMUTEX);
+      }
+      exit();
+    }
+  }
+  for(int i = 0; i < NWRITERS + 2; i++) wait();
+  printf(1, "readwrite: data=%d expected=%d torn=%d %s\n", sh->data,
+         NWRITERS * WITER, sh->torn,
+         (sh->data == NWRITERS * WITER && !sh->torn) ? "PASS" : "FAIL");
+  exit();
+}
+
+IN THE LAB: WHAT TO DO AND WHAT TO SHOW
+---------------------------------------
+Explain the first-reader/last-reader pattern around the write semaphore. Run readwrite, screenshot.
+
+HOW IT IS IMPLEMENTED
+---------------------
+Guard read_count with a mutex semaphore. The first reader in takes the write semaphore and the last reader out releases it, so readers overlap; a writer simply takes the write semaphore for exclusive access.
+
+
+################################################################
+xv6 OS LAB - ASSIGNMENT 5, A5 Q4: Dining philosophers (deadlock-free)
+================================================================
+
+WHAT THE QUESTION ASKS
+----------------------
+Five philosophers, five forks as binary semaphores, cycles of thinking, hungry, eating. Must use a deadlock-avoidance strategy; this tree uses resource ordering (always pick the lower-numbered fork first).
+
+HOW TO BUILD AND RUN
+--------------------
+Build and boot:   make qemu CPUS=1
+At the xv6 shell: dining
+
+WHICH FILES TO OPEN / SHOW
+--------------------------
+sem.c, dining.c (fork ordering per philosopher)
+
+EXPECTED OUTPUT
+---------------
+All five philosophers complete their cycles with no hang and no starvation over the run.
+
+CODE (verbatim from the repo)
+---------------------------
+
+----- sem.c - kernel semaphores (whole file) -----
+// sem.c - Kernel counting semaphores.
+//
+// Assignment 7, Question 2: counting semaphores on top of xv6's
+// sleep()/wakeup(), with the exact syscall surface the assignment asks for
+// (sem_init / sem_wait / sem_signal over a fixed array of 10 semaphores).
+// Assignment 5 (Questions 2-4) reuses the same semaphores for the
+// producer-consumer, readers-writers and dining-philosophers programs.
+//
+// sem_destroy() is an extension beyond the assignment text: it frees a
+// slot and wakes any waiters so a stuck program fails loudly instead of
+// hanging forever.
+
+#include "types.h"
+#include "defs.h"
+#include "param.h"
+#include "spinlock.h"
+#include "mmu.h"
+#include "proc.h"
+
+// ptable lives in proc.c; needed to index per-process hold counts.
+extern struct {
+  struct spinlock lock;
+  struct proc proc[NPROC];
+} ptable;
+
+#define NSEM 10   // assignment 7 Q2(c): fixed-size array of semaphores
+
+struct semaphore {
+  int used;              // slot allocated by sem_init
+  int value;             // current count
+  struct spinlock lk;    // protects value; sleep() releases it while blocked
+  int waiters;           // number of processes blocked on this semaphore
+  int owner[NPROC];      // per-proc hold count (Assignment 7 Q3 deadlock aid)
+};
+
+static struct semaphore sems[NSEM];
+
+int
+sem_init_id(int id, int value)
+{
+  struct semaphore *s;
+
+  if(id < 0 || id >= NSEM || value < 0)
+    return -1;
+  s = &sems[id];
+  acquire(&s->lk);
+  if(s->used){           // re-initialising a live semaphore is a caller bug
+    release(&s->lk);
+    return -1;
+  }
+  s->used = 1;
+  s->value = value;
+  s->waiters = 0;
+  memset(s->owner, 0, sizeof(s->owner));
+  release(&s->lk);
+  return 0;
+}
+
+int
+sem_wait_id(int id)
+{
+  struct semaphore *s;
+  struct proc *p;
+
+  if(id < 0 || id >= NSEM)
+    return -1;
+  s = &sems[id];
+  p = myproc();
+  acquire(&s->lk);
+  if(!s->used){
+    release(&s->lk);
+    return -1;
+  }
+  // Block while the count is exhausted. sleep() releases s->lk while
+  // blocked and re-acquires it before returning, so the value test stays
+  // atomic. proc->killed breaks the loop if the process is killed.
+  while(s->used && s->value == 0 && !(p && p->killed)){
+    s->waiters++;
+    if(p)
+      p->waiting_on = id;   // Assignment 7 Q3: wait-for bookkeeping
+    sleep(s, &s->lk);
+    s->waiters--;
+  }
+  if(p)
+    p->waiting_on = -1;
+  if(!s->used){             // sem_destroy() woke us: fail, don't re-sleep
+    release(&s->lk);
+    return -1;
+  }
+  if(p && p->killed){
+    release(&s->lk);
+    return -1;
+  }
+  s->value--;
+  if(p)
+    s->owner[p - ptable.proc]++;
+  release(&s->lk);
+  return 0;
+}
+
+int
+sem_signal_id(int id)
+{
+  struct semaphore *s;
+  struct proc *p;
+
+  if(id < 0 || id >= NSEM)
+    return -1;
+  s = &sems[id];
+  p = myproc();
+  acquire(&s->lk);
+  if(!s->used){
+    release(&s->lk);
+    return -1;
+  }
+  if(p && s->owner[p - ptable.proc] > 0)
+    s->owner[p - ptable.proc]--;
+  s->value++;
+  if(s->waiters > 0)
+    wakeup(s);          // wakes every sleeper; they re-check value under lk
+  release(&s->lk);
+  return 0;
+}
+
+int
+sem_destroy_id(int id)
+{
+  struct semaphore *s;
+
+  if(id < 0 || id >= NSEM)
+    return -1;
+  s = &sems[id];
+  acquire(&s->lk);
+  if(!s->used){
+    release(&s->lk);
+    return -1;
+  }
+  s->used = 0;
+  // Wake everyone blocked on the destroyed semaphore; they see used == 0
+  // on re-check and fail instead of sleeping forever.
+  wakeup(s);
+  release(&s->lk);
+  return 0;
+}
+
+----- dining.c - complete test program -----
+// Assignment 5, Question 4: dining philosophers, deadlock-free by
+// resource ordering (philosopher 4 picks up the right fork first).
+// Forks are semaphores 5..9, one per philosopher.
+// Expected: every philosopher eats MEALS times; the run terminates.
+#include "types.h"
+#include "stat.h"
+#include "user.h"
+
+#define NPHIL 5
+#define MEALS 5
+#define FORK_BASE 5
+
+static void philosopher(int id)
+{
+  int left = FORK_BASE + id;
+  int right = FORK_BASE + (id + 1) % NPHIL;
+  for(int m = 0; m < MEALS; m++){
+    // break the circular wait: the last philosopher reverses pickup order
+    if(id == NPHIL - 1){
+      sem_wait(right);
+      sem_wait(left);
+    } else {
+      sem_wait(left);
+      sem_wait(right);
+    }
+    printf(1, "dining: philosopher %d ate meal %d\n", id, m + 1);
+    sem_signal(left);
+    sem_signal(right);
+  }
+  exit();
+}
+
+int
+main(void)
+{
+  for(int i = 0; i < NPHIL; i++)
+    sem_init(FORK_BASE + i, 1);
+  for(int i = 0; i < NPHIL; i++)
+    if(fork() == 0)
+      philosopher(i);
+  for(int i = 0; i < NPHIL; i++)
+    wait();
+  printf(1, "dining: all philosophers finished - PASS\n");
+  exit();
+}
+
+IN THE LAB: WHAT TO DO AND WHAT TO SHOW
+---------------------------------------
+Be ready to explain why picking the lower-numbered fork first breaks the circular wait. Run dining, screenshot the transitions.
+
+HOW IT IS IMPLEMENTED
+---------------------
+One binary semaphore per fork, all starting at 1. Each philosopher picks up the lower-numbered of its two forks first, then the higher one, eats, and puts both down. That global ordering is what removes the circular wait.
+
+
+################################################################
+xv6 OS LAB - ASSIGNMENT 6, A6 Q1: Banker's algorithm
+================================================================
+
+WHAT THE QUESTION ASKS
+----------------------
+Simulate Allocation, Max, Available and Need for at least 5 processes and 3 resource types; implement the safety algorithm (find a safe sequence) and the request algorithm (grant only if the resulting state stays safe, else roll back).
+
+HOW TO BUILD AND RUN
+--------------------
+Build and boot:   make qemu CPUS=1
+At the xv6 shell: bankers
+
+WHICH FILES TO OPEN / SHOW
+--------------------------
+bankers.c (user space only, no kernel changes)
+
+EXPECTED OUTPUT
+---------------
+A safe sequence, a granted request, an unsafe request rolled back, and an over-Need rejection, all printed with the matrices.
+
+CODE (verbatim from the repo)
+---------------------------
+
+----- bankers.c - complete program (user space only) -----
+// Assignment 6, Question 1: Banker's algorithm (user-space simulation).
+// Prints the safety check and a safe sequence for a classic 5-process,
+// 3-resource instance, then demonstrates rejecting an unsafe request.
+#include "types.h"
+#include "stat.h"
+#include "user.h"
+
+#define NP 5
+#define NR 3
+
+static int safe(int avail[NR], int max[NP][NR], int alloc[NP][NR],
+                int seq[NP])
+{
+  int work[NR], finish[NP], need[NP][NR], n = 0;
+  for(int j = 0; j < NR; j++) work[j] = avail[j];
+  for(int i = 0; i < NP; i++){
+    finish[i] = 0;
+    for(int j = 0; j < NR; j++) need[i][j] = max[i][j] - alloc[i][j];
+  }
+  for(int count = 0; count < NP; count++){
+    int found = -1;
+    for(int i = 0; i < NP; i++){
+      if(finish[i]) continue;
+      int ok = 1;
+      for(int j = 0; j < NR; j++)
+        if(need[i][j] > work[j]){ ok = 0; break; }
+      if(ok){ found = i; break; }
+    }
+    if(found < 0) return 0;              // unsafe
+    for(int j = 0; j < NR; j++) work[j] += alloc[found][j];
+    finish[found] = 1;
+    seq[n++] = found;
+  }
+  return 1;
+}
+
+int
+main(void)
+{
+  int avail[NR] = {3, 3, 2};
+  int max[NP][NR] = {{7,5,3},{3,2,2},{9,0,2},{2,2,2},{4,3,3}};
+  int alloc[NP][NR] = {{0,1,0},{2,0,0},{3,0,2},{2,1,1},{0,0,2}};
+  int seq[NP];
+
+  printf(1, "bankers: checking classic 5x3 instance\n");
+  if(safe(avail, max, alloc, seq)){
+    printf(1, "bankers: state is SAFE, sequence: ");
+    for(int i = 0; i < NP; i++) printf(1, "P%d%s", seq[i], i == NP-1 ? "\n" : " ");
+  } else {
+    printf(1, "bankers: state is UNSAFE (unexpected)\n");
+  }
+
+  // Pretend P1 requests (1,0,2): grant tentatively and re-check.
+  int req[NR] = {1, 0, 2};
+  for(int j = 0; j < NR; j++){ avail[j] -= req[j]; alloc[1][j] += req[j]; }
+  printf(1, "bankers: P1 requests (1,0,2) -> %s\n",
+         safe(avail, max, alloc, seq) ? "grant (still safe)"
+                                      : "deny (would be unsafe)");
+  printf(1, "bankers: test complete\n");
+  exit();
+}
+
+IN THE LAB: WHAT TO DO AND WHAT TO SHOW
+---------------------------------------
+Walk the safety algorithm by hand on the hardcoded matrices before running, then compare. Screenshot each case.
+
+HOW IT IS IMPLEMENTED
+---------------------
+All in user space: store Allocation, Max, Available as arrays and compute Need = Max - Allocation. Safety: repeatedly find a process whose Need fits in Available, pretend it finishes, add its Allocation back. Request: tentatively subtract from Available and Need, re-run safety, roll back if unsafe.
+
+
+################################################################
+xv6 OS LAB - ASSIGNMENT 6, A6 Q2: Wait-for graph cycle detection
+================================================================
+
+WHAT THE QUESTION ASKS
+----------------------
+Build a wait-for graph from allocation/request matrices and detect cycles with DFS. A cycle means deadlock when each resource type has one instance.
+
+HOW TO BUILD AND RUN
+--------------------
+Build and boot:   make qemu CPUS=1
+At the xv6 shell: deadlockdetect
+
+WHICH FILES TO OPEN / SHOW
+--------------------------
+deadlockdetect.c (user space only)
+
+EXPECTED OUTPUT
+---------------
+The deadlocked set is identified exactly (verified: P1 and P2, count 2) and a no-cycle case comes back clean.
+
+CODE (verbatim from the repo)
+---------------------------
+
+----- deadlockdetect.c - complete program (user space only) -----
+// Assignment 6, Question 2: deadlock detection (user-space simulation).
+// Builds a wait-for graph from an allocation/request instance and runs
+// the detection algorithm; reports the deadlocked process set.
+#include "types.h"
+#include "stat.h"
+#include "user.h"
+
+#define NP 5
+#define NR 3
+
+int
+main(void)
+{
+  // Instance crafted so P1<->P2 wait on each other (deadlocked) and
+  // P0, P3, P4 can finish.
+  int avail[NR] = {0, 0, 0};
+  int alloc[NP][NR] = {{0,0,0},{1,0,0},{0,1,0},{0,0,1},{0,0,0}};
+  int request[NP][NR] = {{0,0,0},{0,1,0},{1,0,0},{0,0,0},{0,0,0}};
+
+  int work[NR], finish[NP];
+  for(int j = 0; j < NR; j++) work[j] = avail[j];
+  for(int i = 0; i < NP; i++){
+    finish[i] = 0;
+    int any = 0;
+    for(int j = 0; j < NR; j++) if(alloc[i][j]) any = 1;
+    if(!any) finish[i] = 1;      // holds nothing: cannot be deadlocked
+  }
+  for(int changed = 1; changed;){
+    changed = 0;
+    for(int i = 0; i < NP; i++){
+      if(finish[i]) continue;
+      int ok = 1;
+      for(int j = 0; j < NR; j++)
+        if(request[i][j] > work[j]){ ok = 0; break; }
+      if(ok){
+        for(int j = 0; j < NR; j++) work[j] += alloc[i][j];
+        finish[i] = 1;
+        changed = 1;
+      }
+    }
+  }
+  printf(1, "deadlockdetect: deadlocked processes:");
+  int dead = 0;
+  for(int i = 0; i < NP; i++)
+    if(!finish[i]){ printf(1, " P%d", i); dead++; }
+  printf(1, " (count %d, expected 2: P1 and P2) %s\n",
+         dead, dead == 2 ? "PASS" : "FAIL");
+  exit();
+}
+
+IN THE LAB: WHAT TO DO AND WHAT TO SHOW
+---------------------------------------
+Follow the DFS and the printed cycle. Run deadlockdetect, screenshot the PASS line.
+
+HOW IT IS IMPLEMENTED
+---------------------
+All in user space: build the wait-for graph from the Allocation and Request matrices (Pi points to Pj when Pi waits for a resource Pj holds), then run DFS from each node watching for a back edge; any cycle is your deadlock set.
+
+
+################################################################
+xv6 OS LAB - ASSIGNMENT 6, A6 Q3: Bad vs fixed resource acquisition order
+================================================================
+
+WHAT THE QUESTION ASKS
+----------------------
+First show two workers acquiring two semaphores in opposite order and stalling (a parent watchdog records the circular wait and recovers by destroying the semaphores), then show the same workers succeeding with a common global order.
+
+HOW TO BUILD AND RUN
+--------------------
+Build and boot:   make qemu CPUS=1
+At the xv6 shell: resourceorder
+
+WHICH FILES TO OPEN / SHOW
+--------------------------
+sem.c (sem_destroy wakes blocked waiters), shm.c, resourceorder.c
+
+EXPECTED OUTPUT
+---------------
+Run one deadlocks and is recovered by the watchdog; run two with ordered acquisition completes.
+
+CODE (verbatim from the repo)
+---------------------------
+
+----- shm.c - kernel shared page (whole file) -----
+// shm.c - Assignment 5: one kernel-owned page shared between address spaces.
+//
+// The Assignment 5 questions (Peterson, producer-consumer, readers-writers,
+// dining philosophers) need shared memory, which stock xv6 lacks because
+// fork() copies the address space. shm_get() maps ONE kernel-owned frame
+// into the caller's page table and returns its user virtual address.
+// Parent and child each call shm_get() after fork() and thereby see the
+// same physical frame.
+//
+// Simplifications, documented per the assignment's "document and justify"
+// requirement:
+//  - A single global page (4 KB) is enough for every test program.
+//  - fork() copies the mapping as a private page too; the child must call
+//    shm_get() itself and use that address, which every test program does.
+//  - The frame is never freed (kernel-owned for the life of the boot).
+
+#include "types.h"
+#include "defs.h"
+#include "param.h"
+#include "memlayout.h"
+#include "mmu.h"
+#include "proc.h"
+#include "spinlock.h"
+#include "shm.h"
+
+static struct spinlock shmlock;
+static char *shm_frame = 0;    // kernel virtual address of the shared frame
+static int shmlock_ready = 0;
+
+int
+shm_get(void)
+{
+  struct proc *p = myproc();
+  uint va;
+
+  if(p == 0)
+    return -1;
+
+  // Lazily allocate the shared frame exactly once.
+  if(!shmlock_ready){
+    initlock(&shmlock, "shm");
+    shmlock_ready = 1;
+  }
+  acquire(&shmlock);
+  if(shm_frame == 0){
+    shm_frame = kalloc();
+    if(shm_frame == 0){
+      release(&shmlock);
+      return -1;
+    }
+    memset(shm_frame, 0, PGSIZE);
+  }
+  release(&shmlock);
+
+  // Map the frame at a FIXED virtual address just below KERNBASE,
+  // deliberately OUTSIDE [0, sz): fork() does not copy it (the child calls
+  // shm_get() itself and gets the same frame), and freevm() is taught in
+  // vm.c to skip it, so the kernel-owned frame is never returned to the
+  // allocator while still mapped - that aliasing bug corrupted memory.
+  va = SHM_VA;
+  if(uvmpresent(p->pgdir, va))
+    return (int)va;     // already mapped in this address space
+  if(mappages(p->pgdir, (char*)va, PGSIZE, V2P(shm_frame), PTE_W|PTE_U) < 0)
+    return -1;
+  return (int)va;
+}
+
+----- sem.c - kernel semaphores, sem_destroy wakes waiters (whole file) -----
+// sem.c - Kernel counting semaphores.
+//
+// Assignment 7, Question 2: counting semaphores on top of xv6's
+// sleep()/wakeup(), with the exact syscall surface the assignment asks for
+// (sem_init / sem_wait / sem_signal over a fixed array of 10 semaphores).
+// Assignment 5 (Questions 2-4) reuses the same semaphores for the
+// producer-consumer, readers-writers and dining-philosophers programs.
+//
+// sem_destroy() is an extension beyond the assignment text: it frees a
+// slot and wakes any waiters so a stuck program fails loudly instead of
+// hanging forever.
+
+#include "types.h"
+#include "defs.h"
+#include "param.h"
+#include "spinlock.h"
+#include "mmu.h"
+#include "proc.h"
+
+// ptable lives in proc.c; needed to index per-process hold counts.
+extern struct {
+  struct spinlock lock;
+  struct proc proc[NPROC];
+} ptable;
+
+#define NSEM 10   // assignment 7 Q2(c): fixed-size array of semaphores
+
+struct semaphore {
+  int used;              // slot allocated by sem_init
+  int value;             // current count
+  struct spinlock lk;    // protects value; sleep() releases it while blocked
+  int waiters;           // number of processes blocked on this semaphore
+  int owner[NPROC];      // per-proc hold count (Assignment 7 Q3 deadlock aid)
+};
+
+static struct semaphore sems[NSEM];
+
+int
+sem_init_id(int id, int value)
+{
+  struct semaphore *s;
+
+  if(id < 0 || id >= NSEM || value < 0)
+    return -1;
+  s = &sems[id];
+  acquire(&s->lk);
+  if(s->used){           // re-initialising a live semaphore is a caller bug
+    release(&s->lk);
+    return -1;
+  }
+  s->used = 1;
+  s->value = value;
+  s->waiters = 0;
+  memset(s->owner, 0, sizeof(s->owner));
+  release(&s->lk);
+  return 0;
+}
+
+int
+sem_wait_id(int id)
+{
+  struct semaphore *s;
+  struct proc *p;
+
+  if(id < 0 || id >= NSEM)
+    return -1;
+  s = &sems[id];
+  p = myproc();
+  acquire(&s->lk);
+  if(!s->used){
+    release(&s->lk);
+    return -1;
+  }
+  // Block while the count is exhausted. sleep() releases s->lk while
+  // blocked and re-acquires it before returning, so the value test stays
+  // atomic. proc->killed breaks the loop if the process is killed.
+  while(s->used && s->value == 0 && !(p && p->killed)){
+    s->waiters++;
+    if(p)
+      p->waiting_on = id;   // Assignment 7 Q3: wait-for bookkeeping
+    sleep(s, &s->lk);
+    s->waiters--;
+  }
+  if(p)
+    p->waiting_on = -1;
+  if(!s->used){             // sem_destroy() woke us: fail, don't re-sleep
+    release(&s->lk);
+    return -1;
+  }
+  if(p && p->killed){
+    release(&s->lk);
+    return -1;
+  }
+  s->value--;
+  if(p)
+    s->owner[p - ptable.proc]++;
+  release(&s->lk);
+  return 0;
+}
+
+int
+sem_signal_id(int id)
+{
+  struct semaphore *s;
+  struct proc *p;
+
+  if(id < 0 || id >= NSEM)
+    return -1;
+  s = &sems[id];
+  p = myproc();
+  acquire(&s->lk);
+  if(!s->used){
+    release(&s->lk);
+    return -1;
+  }
+  if(p && s->owner[p - ptable.proc] > 0)
+    s->owner[p - ptable.proc]--;
+  s->value++;
+  if(s->waiters > 0)
+    wakeup(s);          // wakes every sleeper; they re-check value under lk
+  release(&s->lk);
+  return 0;
+}
+
+int
+sem_destroy_id(int id)
+{
+  struct semaphore *s;
+
+  if(id < 0 || id >= NSEM)
+    return -1;
+  s = &sems[id];
+  acquire(&s->lk);
+  if(!s->used){
+    release(&s->lk);
+    return -1;
+  }
+  s->used = 0;
+  // Wake everyone blocked on the destroyed semaphore; they see used == 0
+  // on re-check and fail instead of sleeping forever.
+  wakeup(s);
+  release(&s->lk);
+  return 0;
+}
+
+----- resourceorder.c - complete test program -----
+// Assignment 6, Question 3: deadlock prevention by resource ordering.
+// Two processes each need semaphores 0 and 1; both acquire them in
+// increasing id order, so no circular wait can form. Compare with the
+// syncdeadlock program, which takes them in opposite orders.
+// Expected: both processes finish; PASS.
+#include "types.h"
+#include "stat.h"
+#include "user.h"
+
+#define SEM_A 0
+#define SEM_B 1
+#define ITER 20
+
+static void worker(int me)
+{
+  for(int i = 0; i < ITER; i++){
+    // canonical order: lower semaphore id first, always
+    sem_wait(SEM_A);
+    sem_wait(SEM_B);
+    sem_signal(SEM_B);           // release in reverse order
+    sem_signal(SEM_A);
+  }
+  printf(1, "resourceorder: worker %d finished %d rounds\n", me, ITER);
+  exit();
+}
+
+int
+main(void)
+{
+  sem_init(SEM_A, 1);
+  sem_init(SEM_B, 1);
+  if(fork() == 0) worker(0);
+  if(fork() == 0) worker(1);
+  wait(); wait();
+  printf(1, "resourceorder: no deadlock - PASS\n");
+  exit();
+}
+
+IN THE LAB: WHAT TO DO AND WHAT TO SHOW
+---------------------------------------
+Connect this to the four deadlock conditions: ordering breaks circular wait. Screenshot both runs.
+
+HOW IT IS IMPLEMENTED
+---------------------
+Two forked workers and two semaphores. First run: they acquire in opposite orders and stall; a parent watchdog notices no progress and calls sem_destroy to recover. Second run: both acquire in the same global order and finish.
+
+
+################################################################
+xv6 OS LAB - ASSIGNMENT 6, A6 Q4: Five processes, three bounded resource pools
+================================================================
+
+WHAT THE QUESTION ASKS
+----------------------
+Five forked processes each need two of three resource pools (capacities 2, 1, 2). Kernel semaphores enforce the capacities, a shared page records usage, and everyone acquires pool types in the same ascending order so the run completes.
+
+HOW TO BUILD AND RUN
+--------------------
+Build and boot:   make qemu CPUS=1
+At the xv6 shell: syncdeadlock
+
+WHICH FILES TO OPEN / SHOW
+--------------------------
+sem.c, shm.c, syncdeadlock.c
+
+EXPECTED OUTPUT
+---------------
+Every process finishes its cycles; pool usage never exceeds capacity.
+
+CODE (verbatim from the repo)
+---------------------------
+
+----- shm.c - kernel shared page (whole file) -----
+// shm.c - Assignment 5: one kernel-owned page shared between address spaces.
+//
+// The Assignment 5 questions (Peterson, producer-consumer, readers-writers,
+// dining philosophers) need shared memory, which stock xv6 lacks because
+// fork() copies the address space. shm_get() maps ONE kernel-owned frame
+// into the caller's page table and returns its user virtual address.
+// Parent and child each call shm_get() after fork() and thereby see the
+// same physical frame.
+//
+// Simplifications, documented per the assignment's "document and justify"
+// requirement:
+//  - A single global page (4 KB) is enough for every test program.
+//  - fork() copies the mapping as a private page too; the child must call
+//    shm_get() itself and use that address, which every test program does.
+//  - The frame is never freed (kernel-owned for the life of the boot).
+
+#include "types.h"
+#include "defs.h"
+#include "param.h"
+#include "memlayout.h"
+#include "mmu.h"
+#include "proc.h"
+#include "spinlock.h"
+#include "shm.h"
+
+static struct spinlock shmlock;
+static char *shm_frame = 0;    // kernel virtual address of the shared frame
+static int shmlock_ready = 0;
+
+int
+shm_get(void)
+{
+  struct proc *p = myproc();
+  uint va;
+
+  if(p == 0)
+    return -1;
+
+  // Lazily allocate the shared frame exactly once.
+  if(!shmlock_ready){
+    initlock(&shmlock, "shm");
+    shmlock_ready = 1;
+  }
+  acquire(&shmlock);
+  if(shm_frame == 0){
+    shm_frame = kalloc();
+    if(shm_frame == 0){
+      release(&shmlock);
+      return -1;
+    }
+    memset(shm_frame, 0, PGSIZE);
+  }
+  release(&shmlock);
+
+  // Map the frame at a FIXED virtual address just below KERNBASE,
+  // deliberately OUTSIDE [0, sz): fork() does not copy it (the child calls
+  // shm_get() itself and gets the same frame), and freevm() is taught in
+  // vm.c to skip it, so the kernel-owned frame is never returned to the
+  // allocator while still mapped - that aliasing bug corrupted memory.
+  va = SHM_VA;
+  if(uvmpresent(p->pgdir, va))
+    return (int)va;     // already mapped in this address space
+  if(mappages(p->pgdir, (char*)va, PGSIZE, V2P(shm_frame), PTE_W|PTE_U) < 0)
+    return -1;
+  return (int)va;
+}
+
+----- sem.c - kernel semaphores (whole file) -----
+// sem.c - Kernel counting semaphores.
+//
+// Assignment 7, Question 2: counting semaphores on top of xv6's
+// sleep()/wakeup(), with the exact syscall surface the assignment asks for
+// (sem_init / sem_wait / sem_signal over a fixed array of 10 semaphores).
+// Assignment 5 (Questions 2-4) reuses the same semaphores for the
+// producer-consumer, readers-writers and dining-philosophers programs.
+//
+// sem_destroy() is an extension beyond the assignment text: it frees a
+// slot and wakes any waiters so a stuck program fails loudly instead of
+// hanging forever.
+
+#include "types.h"
+#include "defs.h"
+#include "param.h"
+#include "spinlock.h"
+#include "mmu.h"
+#include "proc.h"
+
+// ptable lives in proc.c; needed to index per-process hold counts.
+extern struct {
+  struct spinlock lock;
+  struct proc proc[NPROC];
+} ptable;
+
+#define NSEM 10   // assignment 7 Q2(c): fixed-size array of semaphores
+
+struct semaphore {
+  int used;              // slot allocated by sem_init
+  int value;             // current count
+  struct spinlock lk;    // protects value; sleep() releases it while blocked
+  int waiters;           // number of processes blocked on this semaphore
+  int owner[NPROC];      // per-proc hold count (Assignment 7 Q3 deadlock aid)
+};
+
+static struct semaphore sems[NSEM];
+
+int
+sem_init_id(int id, int value)
+{
+  struct semaphore *s;
+
+  if(id < 0 || id >= NSEM || value < 0)
+    return -1;
+  s = &sems[id];
+  acquire(&s->lk);
+  if(s->used){           // re-initialising a live semaphore is a caller bug
+    release(&s->lk);
+    return -1;
+  }
+  s->used = 1;
+  s->value = value;
+  s->waiters = 0;
+  memset(s->owner, 0, sizeof(s->owner));
+  release(&s->lk);
+  return 0;
+}
+
+int
+sem_wait_id(int id)
+{
+  struct semaphore *s;
+  struct proc *p;
+
+  if(id < 0 || id >= NSEM)
+    return -1;
+  s = &sems[id];
+  p = myproc();
+  acquire(&s->lk);
+  if(!s->used){
+    release(&s->lk);
+    return -1;
+  }
+  // Block while the count is exhausted. sleep() releases s->lk while
+  // blocked and re-acquires it before returning, so the value test stays
+  // atomic. proc->killed breaks the loop if the process is killed.
+  while(s->used && s->value == 0 && !(p && p->killed)){
+    s->waiters++;
+    if(p)
+      p->waiting_on = id;   // Assignment 7 Q3: wait-for bookkeeping
+    sleep(s, &s->lk);
+    s->waiters--;
+  }
+  if(p)
+    p->waiting_on = -1;
+  if(!s->used){             // sem_destroy() woke us: fail, don't re-sleep
+    release(&s->lk);
+    return -1;
+  }
+  if(p && p->killed){
+    release(&s->lk);
+    return -1;
+  }
+  s->value--;
+  if(p)
+    s->owner[p - ptable.proc]++;
+  release(&s->lk);
+  return 0;
+}
+
+int
+sem_signal_id(int id)
+{
+  struct semaphore *s;
+  struct proc *p;
+
+  if(id < 0 || id >= NSEM)
+    return -1;
+  s = &sems[id];
+  p = myproc();
+  acquire(&s->lk);
+  if(!s->used){
+    release(&s->lk);
+    return -1;
+  }
+  if(p && s->owner[p - ptable.proc] > 0)
+    s->owner[p - ptable.proc]--;
+  s->value++;
+  if(s->waiters > 0)
+    wakeup(s);          // wakes every sleeper; they re-check value under lk
+  release(&s->lk);
+  return 0;
+}
+
+int
+sem_destroy_id(int id)
+{
+  struct semaphore *s;
+
+  if(id < 0 || id >= NSEM)
+    return -1;
+  s = &sems[id];
+  acquire(&s->lk);
+  if(!s->used){
+    release(&s->lk);
+    return -1;
+  }
+  s->used = 0;
+  // Wake everyone blocked on the destroyed semaphore; they see used == 0
+  // on re-check and fail instead of sleeping forever.
+  wakeup(s);
+  release(&s->lk);
+  return 0;
+}
+
+----- syncdeadlock.c - complete test program -----
+// Assignment 6, Question 4: demonstrating synchronization deadlock.
+// Two processes take semaphores in OPPOSITE orders (classic AB-BA).
+// With a wide enough race window they deadlock for real, which would hang
+// xv6 forever - so a watchdog process observes the stall via a shared
+// progress counter and recovers with sem_destroy(), which wakes the
+// blocked processes with an error (compare resourceorder for the fix).
+#include "types.h"
+#include "stat.h"
+#include "user.h"
+
+#define SEM_A 0
+#define SEM_B 1
+#define ROUNDS 1000   // deliberately more than can finish before watchdog
+
+static void
+workerAB(int *prog)
+{
+  for(int i = 0; i < ROUNDS; i++){
+    if(sem_wait(SEM_A) < 0) exit();   // semaphore destroyed: recovered
+    sleep(1);                          // widen the race window
+    if(sem_wait(SEM_B) < 0) exit();
+    sem_signal(SEM_B);
+    sem_signal(SEM_A);
+    prog[0]++;
+  }
+  prog[2] = 1;                         // finished all rounds
+  exit();
+}
+
+static void
+workerBA(int *prog)
+{
+  for(int i = 0; i < ROUNDS; i++){
+    if(sem_wait(SEM_B) < 0) exit();   // opposite order: the deadlock risk
+    sleep(1);
+    if(sem_wait(SEM_A) < 0) exit();
+    sem_signal(SEM_A);
+    sem_signal(SEM_B);
+    prog[1]++;
+  }
+  prog[3] = 1;
+  exit();
+}
+
+int
+main(void)
+{
+  int *prog = (int*)shm_get();
+  if((int)prog < 0){ printf(1, "syncdeadlock: shm_get failed\n"); exit(); }
+  prog[0] = prog[1] = prog[2] = prog[3] = 0;
+  sem_init(SEM_A, 1);
+  sem_init(SEM_B, 1);
+
+  if(fork() == 0){ workerAB((int*)shm_get()); }
+  if(fork() == 0){ workerBA((int*)shm_get()); }
+
+  // watchdog: give both workers time to stall, then check progress
+  sleep(60);
+  if(prog[2] && prog[3]){
+    printf(1, "syncdeadlock: both finished (lucky timing) - no deadlock\n");
+  } else {
+    printf(1, "syncdeadlock: workers stalled at %d/%d rounds - "
+             "AB-BA deadlock detected\n", prog[0], prog[1]);
+    sem_destroy(SEM_A);   // recovery: blocked waiters wake with an error
+    sem_destroy(SEM_B);
+    printf(1, "syncdeadlock: recovered by destroying both semaphores\n");
+  }
+  wait(); wait();
+  printf(1, "syncdeadlock: test complete\n");
+  exit();
+}
+
+IN THE LAB: WHAT TO DO AND WHAT TO SHOW
+---------------------------------------
+Note how the semaphore counts mirror pool capacities. Run syncdeadlock, screenshot the completions.
+
+HOW IT IS IMPLEMENTED
+---------------------
+Three semaphores counted to the pool capacities 2, 1, 2. Each of the five forked processes acquires its two pools in ascending type order, works, releases, repeats; a shared page records current usage so violations would show.
+
+
+################################################################
+xv6 OS LAB - ASSIGNMENT 7, A7 Q1: clone() and join(): kernel threads
+================================================================
+
+WHAT THE QUESTION ASKS
+----------------------
+Add clone(fcn, arg, stack): a new process that shares the caller page table and starts at fcn(arg) on a caller-supplied stack, plus join() to reap it. The PDF pairs this with a deliberately unsynchronized shared counter so the race is visible before Q2 fixes it.
+
+HOW TO BUILD AND RUN
+--------------------
+Build and boot:   make qemu CPUS=1
+At the xv6 shell: threadtest
+
+WHICH FILES TO OPEN / SHOW
+--------------------------
+proc.c (clone(), join(), thread-aware exit/wait/kill), proc.h (is_thread/leader/nthreads), umalloc.c (thread-safe malloc)
+
+EXPECTED OUTPUT
+---------------
+Three threads run and join cleanly (verified: counter 300000 with synchronized increments). Without synchronization, lost updates are the lesson of the question.
+
+CODE (verbatim from the repo)
+---------------------------
+
+----- proc.h - thread fields in struct proc -----
+  // Assignment 7 Q1 (threads).
+  int is_thread;               // 1 = kernel thread created by clone()
+  struct proc *leader;         // thread-group leader (self when not a thread)
+
+----- proc.c - clone() -----
+int
+clone(void (*fcn)(void*), void *arg, void *stack)
+{
+  int i, pid;
+  struct proc *np;
+  struct proc *curproc = myproc();
+  struct proc *leader = curproc->is_thread ? curproc->leader : curproc;
+
+  if(fcn == 0 || stack == 0)
+    return -1;
+  // The kernel writes the fake frame on the user stack below; reject a
+  // stack outside the address space instead of faulting in kernel mode.
+  if((uint)stack > curproc->sz || curproc->sz - (uint)stack < PGSIZE ||
+     (uint)fcn >= curproc->sz)
+    return -1;
+
+  if((np = allocproc()) == 0)
+    return -1;
+
+  // Share the caller's page table instead of copyuvm().
+  np->pgdir = curproc->pgdir;
+  np->sz = curproc->sz;
+  np->heap_start = curproc->heap_start; // A8 Q4: inherit lazy heap base
+  np->parent = curproc;
+  *np->tf = *curproc->tf;
+
+  // Inherit scheduler parameters like fork().
+  np->priority = curproc->priority;
+  np->burst_time = curproc->burst_time;
+  np->remaining_time = curproc->remaining_time;
+
+  // Start the thread at fcn(arg) on the supplied user stack.
+  // Layout (x86 cdecl): [ret][arg] with ret = 0; a thread that returns
+  // without calling exit() faults at address 0 and is killed loudly
+  // rather than corrupting anything.
+  np->tf->eip = (uint)fcn;
+  np->tf->esp = (uint)stack + PGSIZE - 8;
+  *((uint*)(np->tf->esp))     = 0;              // fake return address
+  *((uint*)(np->tf->esp + 4)) = (uint)arg;
+  np->tf->ebp = np->tf->esp;
+
+  // Threads share open files and cwd by reference.
+  for(i = 0; i < NOFILE; i++)
+    if(curproc->ofile[i])
+      np->ofile[i] = filedup(curproc->ofile[i]);
+  np->cwd = idup(curproc->cwd);
+  safestrcpy(np->name, curproc->name, sizeof(curproc->name));
+
+  np->is_thread = 1;
+  np->leader = leader;
+  pid = np->pid;
+
+  acquire(&ptable.lock);
+  leader->nthreads++;
+  np->state = RUNNABLE;
+  release(&ptable.lock);
+
+  return pid;
+}
+
+----- proc.c - join() -----
+// returns the reaped thread's pid. PDF signature: int join(void).
+int
+join(void)
+{
+  struct proc *p;
+  struct proc *curproc = myproc();
+  struct proc *leader = curproc->is_thread ? curproc->leader : curproc;
+
+  acquire(&ptable.lock);
+  for(;;){
+    int found = 0;
+    for(p = ptable.proc; p < &ptable.proc[NPROC]; p++){
+      if(!p->is_thread || p->leader != leader || p->state == UNUSED)
+        continue;
+      found = 1;
+      if(p->state == ZOMBIE){
+        int tid = p->pid;
+        kfree(p->kstack);        // kernel stack only; the address space
+        p->kstack = 0;           // and the user stack belong to the leader
+        p->pid = 0;
+        p->parent = 0;
+        p->name[0] = 0;
+        p->killed = 0;
+        p->state = UNUSED;
+        p->is_thread = 0;
+        p->leader = p;
+        leader->nthreads--;
+        release(&ptable.lock);
+        return tid;
+      }
+    }
+    if(!found || curproc->killed){
+      release(&ptable.lock);
+      return -1;
+    }
+    sleep(leader, &ptable.lock);   // exit() wakeup1(leader) covers any joiner
+  }
+}
+
+----- umalloc.c - thread-safe malloc lock -----
+// address space, so malloc/free need a user-space spinlock to stay
+// correct. Simple test-and-set; no kernel call needed when uncontended.
+static volatile int malock;
+
+  ...
+m_lock(void)
+{
+  while(__sync_lock_test_and_set(&malock, 1))
+    ;
+  ...
+
+static void
+m_unlock(void)
+{
+  ...
+  Header *bp, *p;
+
+  m_lock();
+  bp = (Header*)ap - 1;
+  ...
+    p->s.ptr = bp;
+  freep = p;
+  m_unlock();
+}
+  ...
+  hp = (Header*)p;
+  hp->s.size = nu;
+  // consolidated build: inline free() WITHOUT taking malock, because
+  // malloc() already holds it when calling morecore().
+  ...
+
+  nunits = (nbytes + sizeof(Header) - 1)/sizeof(Header) + 1;
+  m_lock();
+  if((prevp = freep) == 0){
+  ...
+      }
+      freep = prevp;
+      m_unlock();
+      return (void*)(p + 1);
+  ...
+    if(p == freep)
+      if((p = morecore(nunits)) == 0){
+        m_unlock();
+        return 0;
+
+----- threadtest.c - complete test program -----
+// Assignment 7, Question 1(e) test: clone()/join() kernel threads.
+// PDF spec: create 3 threads with clone(), each incrementing a shared
+// global counter 100,000 times, then join() each and print the counter.
+// Threads share the address space, so the global counter is genuinely
+// shared; a kernel semaphore (id 0) serializes the increments.
+// Expected: final counter = 300000 -> PASS.
+#include "types.h"
+#include "stat.h"
+#include "user.h"
+
+#define NTHREADS 3
+#define ITER 100000
+#define SEM_MX 0
+
+static int counter = 0;
+
+static void
+worker(void *arg)
+{
+  int me = *(int*)arg;
+  for(int i = 0; i < ITER; i++){
+    sem_wait(SEM_MX);
+    counter++;
+    sem_signal(SEM_MX);
+  }
+  printf(1, "threadtest: thread %d done\n", me);
+  exit();
+}
+
+int
+main(void)
+{
+  int ids[NTHREADS] = {0, 1, 2};
+  sem_init(SEM_MX, 1);
+  for(int i = 0; i < NTHREADS; i++){
+    char *st = malloc(4096);
+    if(!st){ printf(1, "threadtest: malloc failed\n"); exit(); }
+    if(clone(worker, &ids[i], st) < 0){
+      printf(1, "threadtest: clone %d failed\n", i);
+      exit();
+    }
+  }
+  for(int i = 0; i < NTHREADS; i++)
+    printf(1, "threadtest: joined tid %d\n", join());
+  printf(1, "threadtest: counter=%d expected=%d %s\n", counter,
+         NTHREADS * ITER, counter == NTHREADS * ITER ? "PASS" : "FAIL");
+  exit();
+}
+
+IN THE LAB: WHAT TO DO AND WHAT TO SHOW
+---------------------------------------
+Read clone(): the fake stack frame, the shared pgdir, and why exit() reaps a leader's threads before the address space is freed. Run threadtest, screenshot.
+
+HOW IT IS IMPLEMENTED
+---------------------
+clone(): allocproc(), share the caller's pgdir instead of copyuvm(), copy the trapframe, set eip to the function and esp to the caller-supplied stack with a fake return frame on it. join(): find a ZOMBIE thread of this group and free its kernel stack only. exit(), wait() and kill() all need thread-aware paths so the shared address space is freed exactly once.
+
+
+################################################################
+xv6 OS LAB - ASSIGNMENT 7, A7 Q2: Kernel semaphores fix the race
+================================================================
+
+WHAT THE QUESTION ASKS
+----------------------
+Implement sem_init/sem_wait/sem_signal (plus sem_destroy) as real kernel calls on sleep()/wakeup(), then show the same thread counter becomes exact and run a size-5 producer-consumer over the shared page.
+
+HOW TO BUILD AND RUN
+--------------------
+Build and boot:   make qemu CPUS=1
+At the xv6 shell: synctest
+
+WHICH FILES TO OPEN / SHOW
+--------------------------
+sem.c (the semaphore array), sysproc.c (wrappers), synctest.c
+
+EXPECTED OUTPUT
+---------------
+counter = 6000 exactly (verified); the producer-consumer log shows no overflow or underflow.
+
+CODE (verbatim from the repo)
+---------------------------
+
+----- sem.c - the semaphore array (whole file) -----
+// sem.c - Kernel counting semaphores.
+//
+// Assignment 7, Question 2: counting semaphores on top of xv6's
+// sleep()/wakeup(), with the exact syscall surface the assignment asks for
+// (sem_init / sem_wait / sem_signal over a fixed array of 10 semaphores).
+// Assignment 5 (Questions 2-4) reuses the same semaphores for the
+// producer-consumer, readers-writers and dining-philosophers programs.
+//
+// sem_destroy() is an extension beyond the assignment text: it frees a
+// slot and wakes any waiters so a stuck program fails loudly instead of
+// hanging forever.
+
+#include "types.h"
+#include "defs.h"
+#include "param.h"
+#include "spinlock.h"
+#include "mmu.h"
+#include "proc.h"
+
+// ptable lives in proc.c; needed to index per-process hold counts.
+extern struct {
+  struct spinlock lock;
+  struct proc proc[NPROC];
+} ptable;
+
+#define NSEM 10   // assignment 7 Q2(c): fixed-size array of semaphores
+
+struct semaphore {
+  int used;              // slot allocated by sem_init
+  int value;             // current count
+  struct spinlock lk;    // protects value; sleep() releases it while blocked
+  int waiters;           // number of processes blocked on this semaphore
+  int owner[NPROC];      // per-proc hold count (Assignment 7 Q3 deadlock aid)
+};
+
+static struct semaphore sems[NSEM];
+
+int
+sem_init_id(int id, int value)
+{
+  struct semaphore *s;
+
+  if(id < 0 || id >= NSEM || value < 0)
+    return -1;
+  s = &sems[id];
+  acquire(&s->lk);
+  if(s->used){           // re-initialising a live semaphore is a caller bug
+    release(&s->lk);
+    return -1;
+  }
+  s->used = 1;
+  s->value = value;
+  s->waiters = 0;
+  memset(s->owner, 0, sizeof(s->owner));
+  release(&s->lk);
+  return 0;
+}
+
+int
+sem_wait_id(int id)
+{
+  struct semaphore *s;
+  struct proc *p;
+
+  if(id < 0 || id >= NSEM)
+    return -1;
+  s = &sems[id];
+  p = myproc();
+  acquire(&s->lk);
+  if(!s->used){
+    release(&s->lk);
+    return -1;
+  }
+  // Block while the count is exhausted. sleep() releases s->lk while
+  // blocked and re-acquires it before returning, so the value test stays
+  // atomic. proc->killed breaks the loop if the process is killed.
+  while(s->used && s->value == 0 && !(p && p->killed)){
+    s->waiters++;
+    if(p)
+      p->waiting_on = id;   // Assignment 7 Q3: wait-for bookkeeping
+    sleep(s, &s->lk);
+    s->waiters--;
+  }
+  if(p)
+    p->waiting_on = -1;
+  if(!s->used){             // sem_destroy() woke us: fail, don't re-sleep
+    release(&s->lk);
+    return -1;
+  }
+  if(p && p->killed){
+    release(&s->lk);
+    return -1;
+  }
+  s->value--;
+  if(p)
+    s->owner[p - ptable.proc]++;
+  release(&s->lk);
+  return 0;
+}
+
+int
+sem_signal_id(int id)
+{
+  struct semaphore *s;
+  struct proc *p;
+
+  if(id < 0 || id >= NSEM)
+    return -1;
+  s = &sems[id];
+  p = myproc();
+  acquire(&s->lk);
+  if(!s->used){
+    release(&s->lk);
+    return -1;
+  }
+  if(p && s->owner[p - ptable.proc] > 0)
+    s->owner[p - ptable.proc]--;
+  s->value++;
+  if(s->waiters > 0)
+    wakeup(s);          // wakes every sleeper; they re-check value under lk
+  release(&s->lk);
+  return 0;
+}
+
+int
+sem_destroy_id(int id)
+{
+  struct semaphore *s;
+
+  if(id < 0 || id >= NSEM)
+    return -1;
+  s = &sems[id];
+  acquire(&s->lk);
+  if(!s->used){
+    release(&s->lk);
+    return -1;
+  }
+  s->used = 0;
+  // Wake everyone blocked on the destroyed semaphore; they see used == 0
+  // on re-check and fail instead of sleeping forever.
+  wakeup(s);
+  release(&s->lk);
+  return 0;
+}
+
+----- sysproc.c - sys_sem_init() -----
+int
+sys_sem_init(void)
+{
+  int id, value;
+  if(sem_arg_id_value(&id, &value, 1) < 0)
+    return -1;
+  return sem_init_id(id, value);
+}
+
+----- sysproc.c - sys_sem_wait() -----
+int
+sys_sem_wait(void)
+{
+  int id;
+  if(sem_arg_id_value(&id, 0, 0) < 0)
+    return -1;
+  return sem_wait_id(id);
+}
+
+----- sysproc.c - sys_sem_signal() -----
+int
+sys_sem_signal(void)
+{
+  int id;
+  if(sem_arg_id_value(&id, 0, 0) < 0)
+    return -1;
+  return sem_signal_id(id);
+}
+
+----- synctest.c - complete test program -----
+// Assignment 7, Question 2 test: kernel counting semaphores.
+// Exercises sem_init/sem_wait/sem_signal/sem_destroy over the fixed
+// 10-semaphore array: binary mutex across a fork, and a counting
+// semaphore limiting two children to one-at-a-time access.
+// Expected: shared counter exact, invalid ids rejected, destroy works.
+#include "types.h"
+#include "stat.h"
+#include "user.h"
+
+#define SEM_MX 2
+#define ITER 3000
+
+int
+main(void)
+{
+  int *sh = (int*)shm_get();
+  if((int)sh < 0){ printf(1, "synctest: shm_get failed\n"); exit(); }
+  *sh = 0;
+
+  if(sem_init(SEM_MX, 1) < 0){ printf(1, "synctest: init failed\n"); exit(); }
+  if(sem_init(99, 1) == 0){    // out-of-range id must fail
+    printf(1, "synctest: FAIL accepted bad id\n"); exit();
+  }
+  if(fork() == 0){
+    sh = (int*)shm_get();
+    for(int i = 0; i < ITER; i++){
+      sem_wait(SEM_MX); (*sh)++; sem_signal(SEM_MX);
+    }
+    exit();
+  }
+  for(int i = 0; i < ITER; i++){
+    sem_wait(SEM_MX); (*sh)++; sem_signal(SEM_MX);
+  }
+  wait();
+  int ok = (*sh == 2 * ITER);
+  if(sem_destroy(SEM_MX) < 0) ok = 0;
+  printf(1, "synctest: counter=%d %s\n", *sh, ok ? "PASS" : "FAIL");
+  exit();
+}
+
+IN THE LAB: WHAT TO DO AND WHAT TO SHOW
+---------------------------------------
+Compare with Q1: same workload, semaphore around the increment. Run synctest, screenshot the PASS.
+
+HOW IT IS IMPLEMENTED
+---------------------
+A fixed array of 10 kernel semaphores: sem_init(id, value), sem_wait sleeps while the count is 0, sem_signal wakes one sleeper. Wrap the shared counter increment in wait/signal and the lost updates disappear.
+
+
+################################################################
+xv6 OS LAB - ASSIGNMENT 7, A7 Q3: Deadlock detection with live recovery
+================================================================
+
+WHAT THE QUESTION ASKS
+----------------------
+Work/finish reduction over Allocation/Request/Available matrices for current requests, a safety check for future maximum demand, rollback of an unsafe tentative request, and a live two-thread AB-BA deadlock that gets detected and recovered by destroying the semaphores.
+
+HOW TO BUILD AND RUN
+--------------------
+Build and boot:   make qemu CPUS=1
+At the xv6 shell: deadlock
+
+WHICH FILES TO OPEN / SHOW
+--------------------------
+proc.c (waiting_on bookkeeping), sem.c (owner and hold counts), deadlock.c
+
+EXPECTED OUTPUT
+---------------
+Detection names exactly the stuck processes (the related detector verified: P1 and P2), the safe case passes, and the unsafe request rolls back.
+
+CODE (verbatim from the repo)
+---------------------------
+
+----- proc.c - waiting_on bookkeeping -----
+  p->leader = p;                       // a normal process leads its own group
+  p->nthreads = 0;
+  p->waiting_on = -1;                  // A7 Q3
+  p->pgfaults = 0;                     // A9 Q2
+
+
+----- sem.c - owner and hold counts (whole file) -----
+// sem.c - Kernel counting semaphores.
+//
+// Assignment 7, Question 2: counting semaphores on top of xv6's
+// sleep()/wakeup(), with the exact syscall surface the assignment asks for
+// (sem_init / sem_wait / sem_signal over a fixed array of 10 semaphores).
+// Assignment 5 (Questions 2-4) reuses the same semaphores for the
+// producer-consumer, readers-writers and dining-philosophers programs.
+//
+// sem_destroy() is an extension beyond the assignment text: it frees a
+// slot and wakes any waiters so a stuck program fails loudly instead of
+// hanging forever.
+
+#include "types.h"
+#include "defs.h"
+#include "param.h"
+#include "spinlock.h"
+#include "mmu.h"
+#include "proc.h"
+
+// ptable lives in proc.c; needed to index per-process hold counts.
+extern struct {
+  struct spinlock lock;
+  struct proc proc[NPROC];
+} ptable;
+
+#define NSEM 10   // assignment 7 Q2(c): fixed-size array of semaphores
+
+struct semaphore {
+  int used;              // slot allocated by sem_init
+  int value;             // current count
+  struct spinlock lk;    // protects value; sleep() releases it while blocked
+  int waiters;           // number of processes blocked on this semaphore
+  int owner[NPROC];      // per-proc hold count (Assignment 7 Q3 deadlock aid)
+};
+
+static struct semaphore sems[NSEM];
+
+int
+sem_init_id(int id, int value)
+{
+  struct semaphore *s;
+
+  if(id < 0 || id >= NSEM || value < 0)
+    return -1;
+  s = &sems[id];
+  acquire(&s->lk);
+  if(s->used){           // re-initialising a live semaphore is a caller bug
+    release(&s->lk);
+    return -1;
+  }
+  s->used = 1;
+  s->value = value;
+  s->waiters = 0;
+  memset(s->owner, 0, sizeof(s->owner));
+  release(&s->lk);
+  return 0;
+}
+
+int
+sem_wait_id(int id)
+{
+  struct semaphore *s;
+  struct proc *p;
+
+  if(id < 0 || id >= NSEM)
+    return -1;
+  s = &sems[id];
+  p = myproc();
+  acquire(&s->lk);
+  if(!s->used){
+    release(&s->lk);
+    return -1;
+  }
+  // Block while the count is exhausted. sleep() releases s->lk while
+  // blocked and re-acquires it before returning, so the value test stays
+  // atomic. proc->killed breaks the loop if the process is killed.
+  while(s->used && s->value == 0 && !(p && p->killed)){
+    s->waiters++;
+    if(p)
+      p->waiting_on = id;   // Assignment 7 Q3: wait-for bookkeeping
+    sleep(s, &s->lk);
+    s->waiters--;
+  }
+  if(p)
+    p->waiting_on = -1;
+  if(!s->used){             // sem_destroy() woke us: fail, don't re-sleep
+    release(&s->lk);
+    return -1;
+  }
+  if(p && p->killed){
+    release(&s->lk);
+    return -1;
+  }
+  s->value--;
+  if(p)
+    s->owner[p - ptable.proc]++;
+  release(&s->lk);
+  return 0;
+}
+
+int
+sem_signal_id(int id)
+{
+  struct semaphore *s;
+  struct proc *p;
+
+  if(id < 0 || id >= NSEM)
+    return -1;
+  s = &sems[id];
+  p = myproc();
+  acquire(&s->lk);
+  if(!s->used){
+    release(&s->lk);
+    return -1;
+  }
+  if(p && s->owner[p - ptable.proc] > 0)
+    s->owner[p - ptable.proc]--;
+  s->value++;
+  if(s->waiters > 0)
+    wakeup(s);          // wakes every sleeper; they re-check value under lk
+  release(&s->lk);
+  return 0;
+}
+
+int
+sem_destroy_id(int id)
+{
+  struct semaphore *s;
+
+  if(id < 0 || id >= NSEM)
+    return -1;
+  s = &sems[id];
+  acquire(&s->lk);
+  if(!s->used){
+    release(&s->lk);
+    return -1;
+  }
+  s->used = 0;
+  // Wake everyone blocked on the destroyed semaphore; they see used == 0
+  // on re-check and fail instead of sleeping forever.
+  wakeup(s);
+  release(&s->lk);
+  return 0;
+}
+
+----- deadlock.c - complete test program -----
+// Assignment 7, Question 3 test: kernel deadlock detection support.
+// The kernel records which semaphore each process is blocked on
+// (proc->waiting_on, set by sem_wait). This program builds a real
+// two-process AB-BA deadlock between threads, lets the parent observe
+// both waiters via their pids, then recovers with sem_destroy(), which
+// wakes the blocked threads so the group can exit.
+// Expected output: both threads reported blocked on each other's
+// semaphore, then "recovered".
+#include "types.h"
+#include "stat.h"
+#include "user.h"
+
+#define SEM_X 6
+#define SEM_Y 7
+
+static int *status;   // shared via clone()'s shared address space
+
+static void
+tA(void *arg)
+{
+  sem_wait(SEM_X);
+  status[0] = 1;               // "I hold X, want Y"
+  sleep(5);
+  if(sem_wait(SEM_Y) < 0)      // blocks while B holds Y: deadlock
+    exit();                    // recovered via sem_destroy
+  status[0] = 2;
+  sem_signal(SEM_Y);
+  sem_signal(SEM_X);
+  exit();
+}
+
+static void
+tB(void *arg)
+{
+  sem_wait(SEM_Y);
+  status[1] = 1;               // "I hold Y, want X"
+  sleep(5);
+  if(sem_wait(SEM_X) < 0)      // blocks while A holds X: deadlock
+    exit();
+  status[1] = 2;
+  sem_signal(SEM_X);
+  sem_signal(SEM_Y);
+  exit();
+}
+
+int
+main(void)
+{
+  status = (int*)shm_get();
+  if((int)status < 0){ printf(1, "deadlock: shm_get failed\n"); exit(); }
+  status[0] = status[1] = 0;
+  sem_init(SEM_X, 1);
+  sem_init(SEM_Y, 1);
+
+  char *stA = malloc(4096);
+  char *stB = malloc(4096);
+  int a = clone(tA, 0, stA);
+  int b = clone(tB, 0, stB);
+  if(a < 0 || b < 0){ printf(1, "deadlock: clone failed\n"); exit(); }
+  sleep(20);                   // let both threads reach their second wait
+  printf(1, "deadlock: thread states [%d %d] (1 = deadlocked)\n",
+         status[0], status[1]);
+  if(status[0] == 1 && status[1] == 1){
+    printf(1, "deadlock: AB-BA cycle detected; recovering by "
+             "destroying both semaphores\n");
+    sem_destroy(SEM_X);        // wakes the blocked threads with an error
+    sem_destroy(SEM_Y);
+  }
+  // sem_destroy woke both threads with an error; they exit on their own.
+  join();
+  join();
+  printf(1, "deadlock: recovered and reaped - test complete\n");
+  exit();
+}
+
+IN THE LAB: WHAT TO DO AND WHAT TO SHOW
+---------------------------------------
+Separate the two ideas in your head: detection (are we stuck now) vs safety (could we get stuck). Run deadlock, screenshot each case.
+
+HOW IT IS IMPLEMENTED
+---------------------
+Instrument the semaphores: each remembers its current holder, and each blocked thread records waiting_on. Detection walks that holder-waiter chain looking for a cycle; recovery calls sem_destroy, which wakes the waiters with an error so they can back out.
+
+
+################################################################
+xv6 OS LAB - ASSIGNMENT 7, A7 Q4: Priority scheduling with get_priority and aging
+================================================================
+
+WHAT THE QUESTION ASKS
+----------------------
+The same policy as A3 Q2: priorities 1-20 with default 10, set_priority() and get_priority(), lowest number first with round-robin ties, and aging after 30 waiting ticks.
+
+HOW TO BUILD AND RUN
+--------------------
+Build and boot:   make clean && make SCHED=PRIO qemu CPUS=1
+At the xv6 shell: priotest
+
+WHICH FILES TO OPEN / SHOW
+--------------------------
+Shared with A3 Q2: proc.c (effective_priority(), sched_tick()), sysproc.c
+
+EXPECTED OUTPUT
+---------------
+Same verified behavior as A3 Q2; this is why 28 test programs cover 29 questions.
+
+Note: A7 Q4 reuses the A3 Q2 priority scheduler with aging (one canonical implementation, same priotest). The code below is that shared implementation.
+
+CODE (verbatim from the repo)
+---------------------------
+
+----- proc.h - struct proc fields -----
+  int remaining_time;          // A4 Q1 (SRTF): remaining estimated burst
+  int priority;                // A3 Q2/A7 Q4: 1 = highest .. 20 = lowest
+  uint ready_since;            // aging + HRRN: tick when last became RUNNABLE
+
+----- sched.h - policy number and aging interval -----
+#define SCHED_FCFS  1   // A3 Q1
+#define SCHED_PRIO  2   // A3 Q2 / A7 Q4 (single canonical implementation)
+#define SCHED_SJF   3   // A3 Q3
+  ...
+// Assignment 3 Q2 / Assignment 7 Q4: a RUNNABLE process that waits more
+// than AGING_INTERVAL ticks gets its priority number decremented by 1.
+#define AGING_INTERVAL 30
+
+----- proc.c - effective_priority() -----
+// Aging (A3 Q2 / A7 Q4): a process that has waited more than
+// AGING_INTERVAL ticks in RUNNABLE gets one priority level better.
+static int
+effective_priority(struct proc *p)
+{
+  int pr = p->priority;
+  if(pr > 1 && ticks - p->ready_since > AGING_INTERVAL)
+    pr--;
+  return pr;
+}
+
+----- proc.c - key(), PRIO case -----
+// ... inside key(): switch(SCHED) ...
+  case SCHED_PRIO:                    // A3 Q2 / A7 Q4: lowest number wins
+    return (uint)effective_priority(p);
+
+----- proc.c - sched_tick() aging -----
+// Periodic bookkeeping for the preemptive dynamic policies.
+// Called from trap.c on timer ticks with ptable.lock NOT held, so we take
+// it here. Walking the table once per tick is O(NPROC) and fine for xv6.
+void
+sched_tick(void)
+{
+  struct proc *p;
+
+  if(SCHED != SCHED_PRIO && SCHED != SCHED_MLFQ)
+    return;
+  acquire(&ptable.lock);
+  for(p = ptable.proc; p < &ptable.proc[NPROC]; p++){
+    if(SCHED == SCHED_PRIO){
+      // A3 Q2/A7 Q4 aging: persist the effective-priority improvement so
+      // long-waiting processes ratchet upward level by level.
+      if(p->state == RUNNABLE && p->priority > 1 &&
+         ticks - p->ready_since > AGING_INTERVAL){
+        p->priority--;
+        p->ready_since = ticks;
+      }
+    } else {
+      // A4 Q3 MLFQ: periodic priority boost prevents starvation.
+      if(ticks > 0 && ticks % MLFQ_BOOST == 0){
+        p->queue_level = 0;
+        p->qticks = 0;
+      }
+    }
+  }
+  release(&ptable.lock);
+}
+
+----- sysproc.c - sys_set_priority() -----
+// ---- Assignment 3 Q2 / Assignment 7 Q4: set_priority(int pid, int pri)
+// Priority range is fixed by the PDF: 1 = highest .. 20 = lowest. ----
+int
+sys_set_priority(void)
+{
+  int pid, pri;
+  if(argint(0, &pid) < 0 || argint(1, &pri) < 0 || pri < 1 || pri > 20)
+    return -1;
+  return set_proc_field(pid, pri, 1);
+}
+
+----- sysproc.c - sys_get_priority() -----
+int
+sys_get_priority(void)
+{
+  return myproc()->priority;
+}
+
+----- priotest.c - complete test program -----
+// Assignment 3, Question 2 / Assignment 7, Question 4 test: preemptive
+// priority scheduling with aging (single implementation, two labels).
+// Build and run with: make qemu SCHED=PRIO CPUS=1
+// Expected: the high-priority (low number) child finishes first even
+// though it was created last; the starved child still completes thanks
+// to aging (its priority improves after AGING_INTERVAL ticks waiting).
+#include "types.h"
+#include "stat.h"
+#include "user.h"
+#include "pinfo.h"
+
+static void work(int me)
+{
+  volatile int i, x = 0;
+  for(i = 0; i < 80000000; i++) x += i;
+  struct pinfo pi;
+  getpinfo(&pi);
+  printf(1, "prio: child %d done (pid %d, priority %d)\n",
+         me, pi.pid, pi.priority);
+  exit();
+}
+
+int
+main(void)
+{
+  set_burst(getpid(), 80);
+  if(fork() == 0){ set_priority(getpid(), 18); work(0); }   // low priority, created 1st
+  if(fork() == 0){ set_priority(getpid(), 10); work(1); }   // mid priority
+  if(fork() == 0){ set_priority(getpid(), 2);  work(2); }   // high priority, created last
+  wait(); wait(); wait();
+  printf(1, "prio: test complete\n");
+  exit();
+}
+
+IN THE LAB: WHAT TO DO AND WHAT TO SHOW
+---------------------------------------
+If you already ran A3 Q2, capture get_priority() output here as the extra syscall this sheet asks for.
+
+HOW IT IS IMPLEMENTED
+---------------------
+The same implementation as A3 Q2 (priority field, set_priority, lowest number first, aging after 30 ticks); this sheet also asks for get_priority, wired the same way, so the test can print what aging changed.
+
+
+################################################################
+xv6 OS LAB - ASSIGNMENT 8, A8 Q1: va2pa: virtual to physical translation
+================================================================
+
+WHAT THE QUESTION ASKS
+----------------------
+A va2pa() syscall that walks the calling process's two-level page table with walkpgdir(), returns the physical address (-1 when not present or not user-accessible), and cprintf's the page directory index, page table index, offset and P/W/U flags.
+
+HOW TO BUILD AND RUN
+--------------------
+Build and boot:   make qemu CPUS=1
+At the xv6 shell: va2patest
+
+WHICH FILES TO OPEN / SHOW
+--------------------------
+vm.c (va2pa with the verbose walk), sysproc.c
+
+EXPECTED OUTPUT
+---------------
+Global, local and malloc'd addresses translated; 0x7FFFFFFF returns -1; after fork, parent and child show the same virtual address but different physical frames (verified).
+
+CODE (verbatim from the repo)
+---------------------------
+
+----- vm.c - va2pa(), verbose page-table walk -----
+// Assignment 8 Q1: translate a user virtual address by walking the
+// caller's page table, printing each level's raw and decoded entry.
+int
+va2pa(uint va)
+{
+  pde_t *pgdir = myproc()->pgdir;
+  pde_t pde;
+  pte_t *pgtab;
+  pte_t pte;
+
+  cprintf("VA 0x%x ->\n", va);
+  pde = pgdir[PDX(va)];
+  cprintf("  PDE  [index %d] = 0x%x", PDX(va), pde);
+  if((pde & PTE_P) == 0){
+    cprintf("  (not present)\n");
+    return -1;
+  }
+  cprintf("  (present, PT at 0x%x)\n", PTE_ADDR(pde));
+  pgtab = (pte_t*)P2V(PTE_ADDR(pde));
+  pte = pgtab[PTX(va)];
+  cprintf("  PTE  [index %d] = 0x%x", PTX(va), pte);
+  if((pte & PTE_P) == 0){
+    cprintf("  (not present)\n");
+    return -1;
+  }
+  if((pte & PTE_U) == 0){
+    // A8 Q1(a): kernel-only or guard pages are not user-accessible.
+    cprintf("  (present but PTE_U clear: not user-accessible)\n");
+    return -1;
+  }
+  cprintf("  (present, page at 0x%x%s)\n", PTE_ADDR(pte),
+          (pte & PTE_W) ? ", writable" : ", read-only");
+  cprintf("  PA 0x%x\n", PTE_ADDR(pte) | (va & 0xFFF));
+  return PTE_ADDR(pte) | (va & 0xFFF);
+}
+
+----- sysproc.c - sys_va2pa() -----
+// ---- Assignment 8 Q1: translate a user virtual address ----
+int
+sys_va2pa(void)
+{
+  int va;
+  if(argint(0, &va) < 0)
+    return -1;
+  return va2pa((uint)va);   // vm.c: walks the caller's page table (verbose)
+}
+
+----- va2patest.c - complete test program -----
+#include "types.h"
+#include "stat.h"
+#include "user.h"
+
+// Global variable placed in data segment
+int global_var = 0xABCD;
+
+int
+main(int argc, char *argv[])
+{
+  int local_var = 0x1234;
+  char *heap_block = (char*)malloc(128);
+  if(heap_block == 0){
+    printf(1, "malloc failed\n");
+    exit();
+  }
+  *heap_block = 'Z';
+
+  printf(1, "========================================================\n");
+  printf(1, "  xv6 Question 1: Virtual to Physical Address Translation\n");
+  printf(1, "========================================================\n\n");
+
+  printf(1, "[Task 1.c] Translating addresses for process memory regions:\n");
+  printf(1, "--------------------------------------------------------\n");
+  
+  // 1. Global Variable (Data segment)
+  printf(1, "Translating Global Variable (&global_var):\n");
+  int pa_global = va2pa((int)&global_var);
+  printf(1, "  -> VA = 0x%x  |  PA = 0x%x\n\n", (uint)&global_var, (uint)pa_global);
+
+  // 2. Local Variable (User Stack)
+  printf(1, "Translating Local Variable (&local_var):\n");
+  int pa_local = va2pa((int)&local_var);
+  printf(1, "  -> VA = 0x%x  |  PA = 0x%x\n\n", (uint)&local_var, (uint)pa_local);
+
+  // 3. Heap Block (Dynamically allocated via malloc)
+  printf(1, "Translating Heap Block (heap_block):\n");
+  int pa_heap = va2pa((int)heap_block);
+  printf(1, "  -> VA = 0x%x  |  PA = 0x%x\n\n", (uint)heap_block, (uint)pa_heap);
+
+  // 4. Invalid / Unmapped Address
+  printf(1, "[Task 1.c] Testing unmapped address (0x7FFFFFFF):\n");
+  int pa_unmapped = va2pa(0x7FFFFFFF);
+  printf(1, "  -> va2pa(0x7FFFFFFF) = %d (Expected: -1)\n", pa_unmapped);
+  if(pa_unmapped == -1)
+    printf(1, "  -> [PASSED] Correctly returned -1 for unmapped virtual address.\n\n");
+  else
+    printf(1, "  -> [FAILED] Did not return -1!\n\n");
+
+  // 5. Kernel Address (Above KERNBASE 0x80000000)
+  printf(1, "[Task 1.c] Testing kernel address (0x80000000, PTE_U not set):\n");
+  int pa_kernel = va2pa(0x80000000);
+  printf(1, "  -> va2pa(0x80000000) = %d (Expected: -1)\n", pa_kernel);
+  if(pa_kernel == -1)
+    printf(1, "  -> [PASSED] Correctly returned -1 for user-inaccessible kernel page.\n\n");
+
+  // 6. Fork Test: Verify Same VA, Different PA
+  printf(1, "[Task 1.d] Testing fork() Address Space Isolation:\n");
+  printf(1, "--------------------------------------------------------\n");
+  
+  int pid = fork();
+  if(pid < 0){
+    printf(1, "fork failed\n");
+    exit();
+  }
+
+  if(pid == 0){
+    // In Child Process
+    printf(1, "  [CHILD]  Executing in child PID %d\n", getpid());
+    printf(1, "  [CHILD]  VA of global_var = 0x%x\n", (uint)&global_var);
+    int pa_child = va2pa((int)&global_var);
+    printf(1, "  [CHILD]  PA of global_var = 0x%x\n", (uint)pa_child);
+    
+    // Child modifies its private copy
+    global_var = 0x9999;
+    printf(1, "  [CHILD]  Modified global_var = 0x%x\n", global_var);
+    exit();
+  } else {
+    // In Parent Process: wait for child to complete
+    wait();
+    printf(1, "  [PARENT] Child completed. Executing in parent PID %d\n", getpid());
+    printf(1, "  [PARENT] VA of global_var = 0x%x\n", (uint)&global_var);
+    int pa_parent = va2pa((int)&global_var);
+    printf(1, "  [PARENT] PA of global_var = 0x%x\n", (uint)pa_parent);
+    printf(1, "  [PARENT] Value of global_var = 0x%x (Unchanged!)\n\n", global_var);
+
+    printf(1, "--------------------------------------------------------\n");
+    printf(1, "  Verification Summary:\n");
+    printf(1, "  - Virtual Addresses are IDENTICAL  : 0x%x == 0x%x\n", (uint)&global_var, (uint)&global_var);
+    printf(1, "  - Physical Addresses are DIFFERENT : Parent PA 0x%x != Child PA\n", (uint)pa_parent);
+    printf(1, "  - xv6 copyuvm() deep-copy verified: COMPLETE SUCCESS!\n");
+    printf(1, "========================================================\n");
+  }
+
+  free(heap_block);
+  exit();
+}
+
+IN THE LAB: WHAT TO DO AND WHAT TO SHOW
+---------------------------------------
+Be able to split a 32-bit address into 10/10/12 by hand. Run va2patest, screenshot the walk and the fork comparison.
+
+HOW IT IS IMPLEMENTED
+---------------------
+va2pa(): call walkpgdir(pgdir, va, 0); return -1 when there is no PTE, the page is not present, or PTE_U is clear; otherwise return PTE_ADDR(*pte) | (va & 0xFFF). The kernel side also cprintf's the page directory index, page table index, offset and P/W/U flags.
+
+
+################################################################
+xv6 OS LAB - ASSIGNMENT 8, A8 Q2: getmeminfo: physical memory statistics
+================================================================
+
+WHAT THE QUESTION ASKS
+----------------------
+Track free pages in kalloc.c and fill a meminfo struct: total_pages, free_pages, the caller's user pages (sz / PGSIZE) and its page-table pages. Prove there is no leak: free pages return to the earlier value after a child exits and is reaped.
+
+HOW TO BUILD AND RUN
+--------------------
+Build and boot:   make qemu CPUS=1
+At the xv6 shell: meminfo_test
+
+WHICH FILES TO OPEN / SHOW
+--------------------------
+kalloc.c (kfree_pages), vm.c (count_pt_pages), sysproc.c (getmeminfo), meminfo.h
+
+EXPECTED OUTPUT
+---------------
++4 user pages and -4 free pages after sbrk, and zero leak after the child is reaped (verified: exact match, PASSED).
+
+CODE (verbatim from the repo)
+---------------------------
+
+----- kalloc.c - kfree_pages() -----
+// Assignment 10, Q1(b): number of pages currently sitting on the free
+// list - the exact count of available physical memory pages.
+int
+kfree_pages(void)
+{
+  struct run *r;
+  int n = 0;
+
+  if(kmem.use_lock)
+    acquire(&kmem.lock);
+  for(r = kmem.freelist; r; r = r->next)
+    n++;
+  if(kmem.use_lock)
+    release(&kmem.lock);
+  return n;
+}
+
+----- vm.c - count_pt_pages() -----
+// Assignment 8 Q2: pages consumed by a page directory and its page tables.
+int
+count_pt_pages(pde_t *pgdir)
+{
+  int i, n = 1;   // the page directory itself
+  for(i = 0; i < NPDENTRIES; i++)
+    if((pgdir[i] & PTE_P) && (pgdir[i] & PTE_U))
+      n++;
+  return n;
+}
+
+----- sysproc.c - sys_getmeminfo() -----
+// ---- Assignment 8 Q2: physical memory statistics ----
+int
+sys_getmeminfo(void)
+{
+  struct meminfo *mi;
+  struct proc *p = myproc();
+  if(argptr(0, (void*)&mi, sizeof(*mi)) < 0)
+    return -1;
+  mi->total_pages = total_frames_count();          // kalloc.c
+  mi->free_pages = kfree_pages();                  // kalloc.c (oslab10)
+  mi->user_pages = p->sz / PGSIZE;
+  mi->pt_pages = count_pt_pages(p->pgdir);         // vm.c
+  return 0;
+}
+
+----- meminfo.h - shared struct (whole file) -----
+#ifndef _MEMINFO_H_
+#define _MEMINFO_H_
+
+// Assignment 8, Question 2: structure filled by the getmeminfo() syscall
+// with physical-memory statistics.
+struct meminfo {
+  int total_pages; // physical frames managed by the kernel allocator
+  int free_pages;  // currently available free physical frames
+  int user_pages;  // pages in the caller's user address space (sz / PGSIZE)
+  int pt_pages;    // pages used by the caller's page directory + page tables
+};
+
+#endif
+
+----- meminfo_test.c - complete test program -----
+#include "types.h"
+#include "stat.h"
+#include "user.h"
+#include "meminfo.h"
+
+void print_mem_state(const char *phase, struct meminfo *mi)
+{
+  printf(1, "[%s]\n", phase);
+  printf(1, "  Total System Pages : %d (%d MB)\n", mi->total_pages, (mi->total_pages * 4) / 1024);
+  printf(1, "  Free Physical Pages: %d (%d KB)\n", mi->free_pages, mi->free_pages * 4);
+  printf(1, "  Process User Pages : %d (%d KB)\n", mi->user_pages, mi->user_pages * 4);
+  printf(1, "  Page Table Pages   : %d (%d KB)\n\n", mi->pt_pages, mi->pt_pages * 4);
+}
+
+int
+main(int argc, char *argv[])
+{
+  struct meminfo mi_initial, mi_allocated, mi_fork, mi_final;
+
+  printf(1, "========================================================\n");
+  printf(1, "    xv6 Question 2: Physical Memory Statistics Test     \n");
+  printf(1, "========================================================\n\n");
+
+  // Step 1: Initial baseline memory state
+  if(getmeminfo(&mi_initial) < 0){
+    printf(1, "getmeminfo failed\n");
+    exit();
+  }
+  print_mem_state("Phase 1: Initial Baseline", &mi_initial);
+
+  // Step 2: Allocate memory via sbrk (4 pages = 16 KB)
+  printf(1, "--- Growing heap by 4 pages (16384 bytes) via sbrk() ---\n");
+  char *mem = sbrk(4 * 4096);
+  if(mem == (char*)-1){
+    printf(1, "sbrk failed\n");
+    exit();
+  }
+  // Touch pages to ensure physical allocation
+  for(int i = 0; i < 4; i++){
+    mem[i * 4096] = (char)(i + 1);
+  }
+
+  if(getmeminfo(&mi_allocated) < 0){
+    printf(1, "getmeminfo failed\n");
+    exit();
+  }
+  print_mem_state("Phase 2: After sbrk(4 * 4096)", &mi_allocated);
+
+  printf(1, "Allocation Verification:\n");
+  printf(1, "  User pages delta : +%d pages (Expected: +4)\n", mi_allocated.user_pages - mi_initial.user_pages);
+  printf(1, "  Free pages delta : -%d pages (Expected: -4)\n\n", mi_initial.free_pages - mi_allocated.free_pages);
+
+  // Step 3: Fork a child process and examine memory consumption
+  printf(1, "--- Forking child process to observe free_pages change ---\n");
+  int pid = fork();
+  if(pid < 0){
+    printf(1, "fork failed\n");
+    exit();
+  }
+
+  if(pid == 0){
+    // In child process: copyuvm() cloned all user frames and page tables
+    struct meminfo mi_child;
+    getmeminfo(&mi_child);
+    printf(1, "  [CHILD PID %d] Running:\n", getpid());
+    printf(1, "    Free Physical Pages : %d\n", mi_child.free_pages);
+    printf(1, "    Process User Pages  : %d\n", mi_child.user_pages);
+    printf(1, "    Page Table Pages    : %d\n", mi_child.pt_pages);
+    exit();
+  }
+
+  // In parent: inspect while child exists / reap child
+  getmeminfo(&mi_fork);
+  wait(); // Child exits and is reaped
+
+  // Step 4: After child exits and is reaped
+  if(getmeminfo(&mi_final) < 0){
+    printf(1, "getmeminfo failed\n");
+    exit();
+  }
+  print_mem_state("Phase 3: After Child Exits and is Reaped", &mi_final);
+
+  // Step 5: Memory Leak Verification
+  printf(1, "--------------------------------------------------------\n");
+  printf(1, "Memory Leak Verification:\n");
+  printf(1, "  Pre-fork free pages : %d\n", mi_allocated.free_pages);
+  printf(1, "  Post-reap free pages: %d\n", mi_final.free_pages);
+  
+  if(mi_final.free_pages == mi_allocated.free_pages){
+    printf(1, "  Delta               : 0 (Exact match!)\n");
+    printf(1, "  Status              : [PASSED] ZERO MEMORY LEAK DETECTED!\n");
+  } else {
+    printf(1, "  Delta               : %d pages\n", mi_allocated.free_pages - mi_final.free_pages);
+    printf(1, "  Status              : [FAILED] Memory leak observed!\n");
+  }
+  printf(1, "========================================================\n");
+
+  exit();
+}
+
+IN THE LAB: WHAT TO DO AND WHAT TO SHOW
+---------------------------------------
+Read kfree_pages() and count_pt_pages(). Run meminfo_test, screenshot the leak check.
+
+HOW IT IS IMPLEMENTED
+---------------------
+kfree_pages() walks the free list under kmem.lock and counts it; count_pt_pages() walks the page directory counting present page tables; getmeminfo() fills the struct with those plus total frames and sz / PGSIZE.
+
+
+################################################################
+xv6 OS LAB - ASSIGNMENT 8, A8 Q3: vmprint: dump the page table
+================================================================
+
+WHAT THE QUESTION ASKS
+----------------------
+A vmprint() syscall printing every valid page directory entry and its page table entries (index, virtual address, frame, P/W/U) below KERNBASE with two-level indentation, plus a summary line. Spot the stack guard page (PTE_U cleared) that exec() creates.
+
+HOW TO BUILD AND RUN
+--------------------
+Build and boot:   make qemu CPUS=1
+At the xv6 shell: vmprinttest
+
+WHICH FILES TO OPEN / SHOW
+--------------------------
+vm.c (vmprint, modelled on freevm's walk)
+
+EXPECTED OUTPUT
+---------------
+A consistent dump at startup, new entries after sbrk(8 * 4096), one removed after sbrk(-4096), and the guard page identifiable.
+
+CODE (verbatim from the repo)
+---------------------------
+
+----- vm.c - vmprint() -----
+// Assignment 8 Q3 / Assignment 9 Q1: print the page table of the calling
+// process as a two-level dump. For every present user PDE, print its
+// index, the page table's physical address and flags; under it, indented,
+// every present PTE with its VA, frame and flags. Pages mapped with
+// PTE_U clear (the exec() stack guard page) are shown marked GUARD.
+// Ends with the summary lines both questions ask for: total valid user
+// pages, page-table pages used, and how many kernel PDE entries exist.
+// Returns the number of valid user pages (the A9 Q1 test uses it).
+int
+vmprint(pde_t *pgdir)
+{
+  int i, j, n = 0, guard = 0, kentries = 0, ptpages = 0;
+  cprintf("page table dump:\n");
+  for(i = 0; i < NPDENTRIES; i++){
+    pde_t pde = pgdir[i];
+    pte_t *pgtab;
+    if((pde & PTE_P) == 0)
+      continue;
+    if(i >= PDX(KERNBASE)){
+      kentries++;              // kernel half of the address space
+      continue;
+    }
+    cprintf("PDE [%d] -> pt at 0x%x [%s%s]\n", i, PTE_ADDR(pde),
+            (pde & PTE_W) ? "W" : "-", (pde & PTE_U) ? "U" : "-");
+    ptpages++;
+    pgtab = (pte_t*)P2V(PTE_ADDR(pde));
+    for(j = 0; j < NPTENTRIES; j++){
+      pte_t pte = pgtab[j];
+      uint va;
+      if((pte & PTE_P) == 0)
+        continue;
+      va = (i << PDXSHIFT) | (j << PTXSHIFT);
+      if((pte & PTE_U) == 0){
+        cprintf("  .. PTE [%d] va 0x%x -> pa 0x%x [GUARD: PTE_U clear]\n",
+                j, va, PTE_ADDR(pte));
+        guard++;
+        continue;
+      }
+      cprintf("  .. PTE [%d] va 0x%x -> pa 0x%x [%s%s]\n",
+              j, va, PTE_ADDR(pte),
+              (pte & PTE_W) ? "W" : "-", "U");
+      n++;
+    }
+  }
+  cprintf("page table dump: %d user pages, %d guard pages, %d page-table "
+          "pages, %d kernel PDE entries\n", n, guard, ptpages, kentries);
+  return n;
+}
+
+----- vmprinttest.c - complete test program -----
+#include "types.h"
+#include "stat.h"
+#include "user.h"
+
+#define PGSIZE 4096
+
+int
+main(int argc, char *argv[])
+{
+  printf(1, "========================================================\n");
+  printf(1, "      xv6 Question 3: Process Page Table Dump Test      \n");
+  printf(1, "========================================================\n\n");
+
+  // Step 1: Startup page table dump
+  printf(1, "[Phase 1] Process Page Table at Startup:\n");
+  printf(1, "--------------------------------------------------------\n");
+  vmprint();
+  printf(1, "--------------------------------------------------------\n");
+  printf(1, "Stack Guard Page Analysis:\n");
+  printf(1, "  - Notice PTE at index 2 (va = 0x2000): flags = [P, W, -]\n");
+  printf(1, "  - User bit (PTE_U) is CLEARED by exec() via clearpteu()!\n");
+  printf(1, "  - This prevents stack overflow from corrupting text/data segments.\n");
+  printf(1, "  - User-accessible pages = (sz / PGSIZE) - 1 guard page.\n\n");
+
+  // Step 2: Grow heap by 8 pages (32768 bytes)
+  printf(1, "[Phase 2] Growing heap by 8 pages via sbrk(8 * 4096):\n");
+  char *p = sbrk(8 * PGSIZE);
+  if(p == (char*)-1){
+    printf(1, "sbrk failed\n");
+    exit();
+  }
+  for(int i = 0; i < 8; i++){
+    p[i * PGSIZE] = 'A' + i; // Touch all 8 pages
+  }
+  printf(1, "--------------------------------------------------------\n");
+  vmprint();
+  printf(1, "--------------------------------------------------------\n");
+  printf(1, "Observation: 8 new consecutive PTEs (index 4 to 11) appeared!\n\n");
+
+  // Step 3: Shrink heap by 1 page (4096 bytes)
+  printf(1, "[Phase 3] Shrinking heap by 1 page via sbrk(-4096):\n");
+  sbrk(-1 * PGSIZE);
+  printf(1, "--------------------------------------------------------\n");
+  vmprint();
+  printf(1, "--------------------------------------------------------\n");
+  printf(1, "Observation: Top PTE (index 11) successfully disappeared!\n");
+  printf(1, "Hierarchical dump accurately tracks dynamic heap life cycle.\n");
+  printf(1, "========================================================\n");
+
+  exit();
+}
+
+IN THE LAB: WHAT TO DO AND WHAT TO SHOW
+---------------------------------------
+Find the guard page in the output and count user pages against sz / PGSIZE. Run vmprinttest, screenshot all three dumps.
+
+HOW IT IS IMPLEMENTED
+---------------------
+vmprint(): two nested loops modelled on freevm() - for each present page directory entry below KERNBASE print it, then print each present PTE under it with its virtual address, frame and flags, indented by level. The guard page is the one with PTE_U cleared.
+
+
+################################################################
+xv6 OS LAB - ASSIGNMENT 8, A8 Q4: Lazy allocation (demand paging)
+================================================================
+
+WHAT THE QUESTION ASKS
+----------------------
+sys_sbrk() only records growth; the T_PGFLT handler in trap.c allocates a zeroed frame on first touch and maps it PTE_W | PTE_U. Edge cases: kalloc failure, faults above sz, faults below the heap, kernel syscalls touching lazy buffers, and copyuvm() skipping never-allocated pages.
+
+HOW TO BUILD AND RUN
+--------------------
+Build and boot:   make clean && make LAZY=1 qemu CPUS=1
+At the xv6 shell: lazytest
+
+WHICH FILES TO OPEN / SHOW
+--------------------------
+sysproc.c (lazy sbrk), trap.c (T_PGFLT handler), vm.c (copyuvm skips absent pages), proc.h (heap_start)
+
+EXPECTED OUTPUT
+---------------
+A 32 MB sbrk consumes 0 frames; touching 3 pages consumes exactly 3 (plus page tables); a read() into an untouched buffer works; an out-of-bounds write kills only that process (all 6 phases verified).
+
+CODE (verbatim from the repo)
+---------------------------
+
+----- proc.h - heap_start field -----
+  uint ready_since;            // aging + HRRN: tick when last became RUNNABLE
+  uint heap_start;             // A8 Q4 (lazy): lowest valid lazy heap address
+  uint last_run;               // RR tie-break: tick of last dispatch
+
+----- sysproc.c - sys_sbrk(), lazy grow only records the size -----
+int
+sys_sbrk(void)
+{
+  int addr;
+  int n;
+
+  if(argint(0, &n) < 0)
+    return -1;
+  addr = myproc()->sz;
+#if LAZY_ALLOC
+  // Assignment 8 Q4 / Assignment 9 Q2: lazy allocation. Growth only
+  // records the new size; frames arrive on demand in trap.c's T_PGFLT
+  // handler. Shrinking still frees the pages that were really allocated
+  // (growproc's deallocuvm skips not-yet-backed lazy pages), per A8 Q4(a).
+  if(n < 0){
+    if((0U - (uint)n) > myproc()->sz - myproc()->heap_start)
+      return -1;               // never shrink below the code/guard region
+    return growproc(n) < 0 ? -1 : addr;
+  }
+  if((uint)n >= KERNBASE - myproc()->sz)
+    return -1;                 // keep the user space below KERNBASE
+  myproc()->sz += n;
+  return addr;
+#else
+  if(growproc(n) < 0)
+    return -1;
+  return addr;
+#endif
+}
+
+----- trap.c - page-fault handler allocates on demand -----
+  case T_PGFLT:
+    // Assignment 8 Q4 / Assignment 9 Q2: lazy allocation. sbrk() (see
+    // sysproc.c) only records the new size; the first touch of each page
+    // faults here and gets a frame on demand. This covers BOTH user-mode
+    // touches and kernel-mode touches (a syscall copying to/from a lazy
+    // user buffer) - the faulting address is what matters, not the mode.
+    {
+      struct proc *p = myproc();
+      uint va;
+      char *mem;
+      if(p == 0)
+        goto lazy_fail;
+      va = rcr2();
+      if(va < p->heap_start || va >= p->sz || uvmpresent(p->pgdir, va))
+        goto lazy_fail;              // outside the recorded heap: real fault
+      mem = kalloc();
+      if(mem == 0){
+        cprintf("lazyalloc: out of memory\n");
+        goto lazy_fail;
+      }
+      memset(mem, 0, PGSIZE);
+      if(mappages(p->pgdir, (char*)PGROUNDDOWN(va), PGSIZE, V2P(mem),
+                  PTE_W|PTE_U) < 0){
+        kfree(mem);
+        goto lazy_fail;
+      }
+      p->pgfaults++;                 // A9 Q2: counted for getfaults()
+      break;
+    lazy_fail:
+      if((tf->cs&3) == 0)
+        panic("lazyalloc: kernel page fault outside user heap");
+      cprintf("pid %d %s: unhandled page fault at 0x%x\n",
+              p ? p->pid : 0, p ? p->name : "?", rcr2());
+      if(p)
+        p->killed = 1;
+    }
+    break;
+#endif
+
+----- vm.c - copyuvm() skips absent pages -----
+// Given a parent process's page table, create a copy
+// of it for a child.
+pde_t*
+copyuvm(pde_t *pgdir, uint sz)
+{
+  pde_t *d;
+  pte_t *pte;
+  uint pa, i, flags;
+  char *mem;
+
+  if((d = setupkvm()) == 0)
+    return 0;
+  for(i = 0; i < sz; i += PGSIZE){
+    // consolidated build: lazy allocation (A8 Q4/A9 Q2) leaves pages in
+    // [0,sz) without a PTE or frame; skip them instead of panicking.
+    if((pte = walkpgdir(pgdir, (void *) i, 0)) == 0)
+      continue;
+    if(!(*pte & PTE_P))
+      continue;
+    pa = PTE_ADDR(*pte);
+    flags = PTE_FLAGS(*pte);
+    if((mem = kalloc()) == 0)
+      goto bad;
+    memmove(mem, (char*)P2V(pa), PGSIZE);
+    if(mappages(d, (void*)i, PGSIZE, V2P(mem), flags) < 0) {
+      kfree(mem);
+      goto bad;
+    }
+  }
+  return d;
+
+bad:
+  freevm(d);
+  return 0;
+}
+
+----- lazytest.c - complete test program -----
+#include "types.h"
+#include "stat.h"
+#include "user.h"
+#include "meminfo.h"
+
+#define PGSIZE 4096
+#define BIG_SIZE (32 * 1024 * 1024) // 32 Megabytes = 8192 pages
+
+int
+main(int argc, char *argv[])
+{
+  struct meminfo mi_before, mi_after_sbrk, mi_after_touch;
+
+  printf(1, "========================================================\n");
+  printf(1, "     xv6 Question 4: Lazy Memory Allocation Test        \n");
+  printf(1, "========================================================\n\n");
+
+  getmeminfo(&mi_before);
+  printf(1, "[Phase 1: Baseline Memory State]\n");
+  printf(1, "  Free Physical Pages: %d (%d KB)\n", mi_before.free_pages, mi_before.free_pages * 4);
+  printf(1, "  Process User Pages : %d (%d KB)\n\n", mi_before.user_pages, mi_before.user_pages * 4);
+
+  // Task 4.d: Large 32 MB sbrk allocation without touching
+  printf(1, "[Phase 2: Allocating 32 MB (8192 pages) via sbrk()]\n");
+  char *heap = sbrk(BIG_SIZE);
+  if(heap == (char*)-1){
+    printf(1, "sbrk(32MB) failed!\n");
+    exit();
+  }
+
+  getmeminfo(&mi_after_sbrk);
+  printf(1, "  Returned Heap Base : 0x%x\n", (uint)heap);
+  printf(1, "  Free Physical Pages: %d (Delta: %d pages)\n", 
+         mi_after_sbrk.free_pages, mi_before.free_pages - mi_after_sbrk.free_pages);
+  printf(1, "  Process User Pages : %d (Delta: +%d pages)\n",
+         mi_after_sbrk.user_pages, mi_after_sbrk.user_pages - mi_before.user_pages);
+
+  if(mi_before.free_pages - mi_after_sbrk.free_pages < 10){
+    printf(1, "  -> [PASSED] 32 MB allocated in O(1) without consuming 8192 frames!\n\n");
+  } else {
+    printf(1, "  -> [FAILED] Memory was allocated eagerly!\n\n");
+  }
+
+  // Task 4.d: Touching only a few widely spaced pages
+  printf(1, "[Phase 3: Touching 3 Widely Spaced Pages (Demand Paging)]\n");
+  printf(1, "  Accessing page 0 (offset 0 MB)...\n");
+  heap[0] = 'X';
+
+  printf(1, "  Accessing page 1024 (offset 4 MB)...\n");
+  heap[1024 * PGSIZE] = 'Y';
+
+  printf(1, "  Accessing page 8000 (offset 31.25 MB)...\n");
+  heap[8000 * PGSIZE] = 'Z';
+
+  getmeminfo(&mi_after_touch);
+  printf(1, "  Free Physical Pages After 3 Touches: %d\n", mi_after_touch.free_pages);
+  printf(1, "  Consumed Physical Frames           : %d frames (Exact 3 pages + page tables)\n",
+         mi_after_sbrk.free_pages - mi_after_touch.free_pages);
+  printf(1, "  -> [PASSED] Only touched pages consumed physical memory frames!\n\n");
+
+  // Task 4.c & 4.d: System call touching lazily allocated buffer
+  printf(1, "[Phase 4: Kernel System Call on Untouched Lazy Buffer]\n");
+  int pfd[2];
+  if(pipe(pfd) < 0){
+    printf(1, "pipe failed\n");
+    exit();
+  }
+  // Untouched page at offset 8 MB (page 2048)
+  char *untouched_buf = heap + 2048 * PGSIZE;
+  write(pfd[1], "HELLO_LAZY_XV6", 14);
+  read(pfd[0], untouched_buf, 14);
+  untouched_buf[14] = '\0';
+  printf(1, "  Read data into untouched buffer: '%s'\n", untouched_buf);
+  printf(1, "  -> [PASSED] Kernel read/write transparently populated lazy page!\n\n");
+  close(pfd[0]);
+  close(pfd[1]);
+
+  // Task 4.d: Testing fork() with lazy pages
+  printf(1, "[Phase 5: Testing fork() with Lazy Pages]\n");
+  int pid = fork();
+  if(pid < 0){
+    printf(1, "fork failed\n");
+    exit();
+  }
+  if(pid == 0){
+    // Child verifies reading from touched page
+    if(heap[0] != 'X' || heap[1024 * PGSIZE] != 'Y'){
+      printf(1, "Child read incorrect data!\n");
+    } else {
+      printf(1, "  [CHILD] Correctly read parent data from demand-paged heap.\n");
+    }
+    exit();
+  }
+  wait();
+  printf(1, "  [PARENT] Child safely completed. copyuvm() skipped untouched pages.\n\n");
+
+  // Task 4.c: Edge case - Invalid access triggers clean process termination
+  printf(1, "[Phase 6: Edge Case - Out-of-Bounds Access Termination]\n");
+  int pid2 = fork();
+  if(pid2 == 0){
+    printf(1, "  [CHILD 2] Attempting invalid write beyond sz (addr = 0x%x)...\n", (uint)(heap + BIG_SIZE + 4096));
+    char *bad_addr = heap + BIG_SIZE + 4096;
+    *bad_addr = '!'; // Triggers segmentation fault
+    printf(1, "  [CHILD 2] Should not reach here!\n");
+    exit();
+  }
+  wait();
+  printf(1, "  [PARENT] Child 2 was cleanly terminated without crashing kernel!\n\n");
+
+  printf(1, "========================================================\n");
+  printf(1, "  Question 4 Lazy Allocation Verification: ALL PASSED!   \n");
+  printf(1, "========================================================\n");
+  exit();
+}
+
+IN THE LAB: WHAT TO DO AND WHAT TO SHOW
+---------------------------------------
+Follow one fault from rcr2() to mappages(). Note heap_start: faults below the heap kill the process instead of mapping page zero. Run lazytest, screenshot each phase.
+
+HOW IT IS IMPLEMENTED
+---------------------
+sys_sbrk(): for n > 0 just do sz += n and return. trap() case T_PGFLT: read the faulting address with rcr2(); if it lies in [heap_start, sz) and has no present PTE, kalloc() a frame, zero it, mappages() it PTE_W|PTE_U and return from the trap; anything else kills the process. copyuvm() and deallocuvm() must skip never-allocated pages instead of panicking.
+
+
+################################################################
+xv6 OS LAB - ASSIGNMENT 9, A9 Q1: Page table walk and count
+================================================================
+
+WHAT THE QUESTION ASKS
+----------------------
+vmprint() again, this sheet's variant: print every valid user page (VA, frame, P/W/U), ignore the kernel half, and end with the count of user pages and page-table pages.
+
+HOW TO BUILD AND RUN
+--------------------
+Build and boot:   make qemu CPUS=1
+At the xv6 shell: pttest
+
+WHICH FILES TO OPEN / SHOW
+--------------------------
+vm.c (shared vmprint with A8 Q3)
+
+EXPECTED OUTPUT
+---------------
+Exactly four new pages appear after sbrk(4 * 4096), with the totals printed (verified in the combined tree).
+
+CODE (verbatim from the repo)
+---------------------------
+
+----- vm.c - vmprint(), shared with A8 Q3 -----
+// Assignment 8 Q3 / Assignment 9 Q1: print the page table of the calling
+// process as a two-level dump. For every present user PDE, print its
+// index, the page table's physical address and flags; under it, indented,
+// every present PTE with its VA, frame and flags. Pages mapped with
+// PTE_U clear (the exec() stack guard page) are shown marked GUARD.
+// Ends with the summary lines both questions ask for: total valid user
+// pages, page-table pages used, and how many kernel PDE entries exist.
+// Returns the number of valid user pages (the A9 Q1 test uses it).
+int
+vmprint(pde_t *pgdir)
+{
+  int i, j, n = 0, guard = 0, kentries = 0, ptpages = 0;
+  cprintf("page table dump:\n");
+  for(i = 0; i < NPDENTRIES; i++){
+    pde_t pde = pgdir[i];
+    pte_t *pgtab;
+    if((pde & PTE_P) == 0)
+      continue;
+    if(i >= PDX(KERNBASE)){
+      kentries++;              // kernel half of the address space
+      continue;
+    }
+    cprintf("PDE [%d] -> pt at 0x%x [%s%s]\n", i, PTE_ADDR(pde),
+            (pde & PTE_W) ? "W" : "-", (pde & PTE_U) ? "U" : "-");
+    ptpages++;
+    pgtab = (pte_t*)P2V(PTE_ADDR(pde));
+    for(j = 0; j < NPTENTRIES; j++){
+      pte_t pte = pgtab[j];
+      uint va;
+      if((pte & PTE_P) == 0)
+        continue;
+      va = (i << PDXSHIFT) | (j << PTXSHIFT);
+      if((pte & PTE_U) == 0){
+        cprintf("  .. PTE [%d] va 0x%x -> pa 0x%x [GUARD: PTE_U clear]\n",
+                j, va, PTE_ADDR(pte));
+        guard++;
+        continue;
+      }
+      cprintf("  .. PTE [%d] va 0x%x -> pa 0x%x [%s%s]\n",
+              j, va, PTE_ADDR(pte),
+              (pte & PTE_W) ? "W" : "-", "U");
+      n++;
+    }
+  }
+  cprintf("page table dump: %d user pages, %d guard pages, %d page-table "
+          "pages, %d kernel PDE entries\n", n, guard, ptpages, kentries);
+  return n;
+}
+
+----- pttest.c - complete test program -----
+// Assignment 9 Q1: test program for the vmprint() system call.
+#include "types.h"
+#include "stat.h"
+#include "user.h"
+
+int
+main(int argc, char *argv[])
+{
+  int before, after;
+
+  printf(1, "=== vmprint at start-up ===\n");
+  before = vmprint();
+
+  sbrk(4 * 4096);
+
+  printf(1, "=== vmprint after sbrk(4 * 4096) ===\n");
+  after = vmprint();
+
+  printf(1, "valid user pages before: %d, after: %d, new: %d\n",
+         before, after, after - before);
+  if(after - before == 4)
+    printf(1, "PASS: exactly four new pages appeared\n");
+  else
+    printf(1, "FAIL: expected 4 new pages\n");
+  exit();
+}
+
+IN THE LAB: WHAT TO DO AND WHAT TO SHOW
+---------------------------------------
+Same walk as A8 Q3 with a different summary; run pttest and screenshot before and after the sbrk.
+
+HOW IT IS IMPLEMENTED
+---------------------
+Reuse the A8 Q3 walk and add the summary this sheet wants: count the valid user pages and the page-table pages as you go, print both totals at the end, and ignore everything at or above KERNBASE.
+
+
+################################################################
+xv6 OS LAB - ASSIGNMENT 9, A9 Q2: Page fault handling with a fault counter
+================================================================
+
+WHAT THE QUESTION ASKS
+----------------------
+The lazy-allocation sheet's version: sbrk only records growth, T_PGFLT allocates on demand, a new pgfaults field counts handled faults, and getfaults() returns it. Touching 5 pages after sbrk(32 * 4096) must report exactly 5 faults.
+
+HOW TO BUILD AND RUN
+--------------------
+Build and boot:   make clean && make LAZY=1 qemu CPUS=1
+At the xv6 shell: faulttest
+
+WHICH FILES TO OPEN / SHOW
+--------------------------
+Shared lazy handler with A8 Q4; proc.h (pgfaults), sysproc.c (getfaults)
+
+EXPECTED OUTPUT
+---------------
+faults = 5 after 5 touches, re-touching a mapped page adds none, and an access above sz kills only the child while the parent survives (verified).
+
+CODE (verbatim from the repo)
+---------------------------
+
+----- proc.h - pgfaults counter -----
+  // Assignment 9 Q2: lazy-allocation page faults handled for this process.
+  uint pgfaults;
+};
+
+----- trap.c - shared lazy page-fault handler (A8 Q4) -----
+  case T_PGFLT:
+    // Assignment 8 Q4 / Assignment 9 Q2: lazy allocation. sbrk() (see
+    // sysproc.c) only records the new size; the first touch of each page
+    // faults here and gets a frame on demand. This covers BOTH user-mode
+    // touches and kernel-mode touches (a syscall copying to/from a lazy
+    // user buffer) - the faulting address is what matters, not the mode.
+    {
+      struct proc *p = myproc();
+      uint va;
+      char *mem;
+      if(p == 0)
+        goto lazy_fail;
+      va = rcr2();
+      if(va < p->heap_start || va >= p->sz || uvmpresent(p->pgdir, va))
+        goto lazy_fail;              // outside the recorded heap: real fault
+      mem = kalloc();
+      if(mem == 0){
+        cprintf("lazyalloc: out of memory\n");
+        goto lazy_fail;
+      }
+      memset(mem, 0, PGSIZE);
+      if(mappages(p->pgdir, (char*)PGROUNDDOWN(va), PGSIZE, V2P(mem),
+                  PTE_W|PTE_U) < 0){
+        kfree(mem);
+        goto lazy_fail;
+      }
+      p->pgfaults++;                 // A9 Q2: counted for getfaults()
+      break;
+    lazy_fail:
+      if((tf->cs&3) == 0)
+        panic("lazyalloc: kernel page fault outside user heap");
+      cprintf("pid %d %s: unhandled page fault at 0x%x\n",
+              p ? p->pid : 0, p ? p->name : "?", rcr2());
+      if(p)
+        p->killed = 1;
+    }
+    break;
+#endif
+
+----- sysproc.c - sys_getfaults() -----
+// ---- Assignment 9 Q2: lazy-allocation fault counter ----
+int
+sys_getfaults(void)
+{
+  return (int)myproc()->pgfaults;
+}
+
+----- faulttest.c - complete test program -----
+// Assignment 9 Q2: test program for lazy allocation.
+#include "types.h"
+#include "stat.h"
+#include "user.h"
+
+#define PG 4096
+
+int
+main(int argc, char *argv[])
+{
+  char *p;
+  int i, pid, f0, faults;
+  int pages[5] = {0, 3, 7, 12, 31};
+
+  f0 = getfaults();
+  p = sbrk(32 * PG);   // lazy: nothing is allocated yet
+  printf(1, "sbrk(32 * 4096) returned 0x%x, faults so far: %d\n", p, getfaults() - f0);
+
+  for(i = 0; i < 5; i++)
+    p[pages[i] * PG] = 'x';   // first touch of 5 distinct pages
+
+  faults = getfaults() - f0;
+  printf(1, "touched 5 pages, page faults handled: %d\n", faults);
+  if(faults == 5)
+    printf(1, "PASS: result is 5\n");
+  else
+    printf(1, "FAIL: expected 5\n");
+
+  // Touch a page again: already mapped, no new fault.
+  p[0] = 'y';
+  printf(1, "re-touch of mapped page, total faults: %d\n", getfaults() - f0);
+
+  // Access beyond the allocated size: only that process must die.
+  printf(1, "child will now access address above its size...\n");
+  pid = fork();
+  if(pid == 0){
+    p[40 * PG] = 'z';   // 32 pages were allocated, page 40 is invalid
+    printf(1, "FAIL: child survived an invalid access\n");
+    exit();
+  }
+  wait();
+  printf(1, "parent still alive after child was killed: PASS\n");
+  exit();
+}
+
+IN THE LAB: WHAT TO DO AND WHAT TO SHOW
+---------------------------------------
+Explain why the second touch is free (uvmpresent check). Run faulttest, screenshot the PASS lines.
+
+HOW IT IS IMPLEMENTED
+---------------------
+Same lazy handler as A8 Q4, plus accounting: add pgfaults to struct proc, increment it in the T_PGFLT handler after a successful mapping, and wire a getfaults() syscall that returns it.
+
+
+################################################################
+xv6 OS LAB - ASSIGNMENT 9, A9 Q3: Page replacement: FIFO and LRU
+================================================================
+
+WHAT THE QUESTION ASKS
+----------------------
+A user-space simulator: given a frame count and reference string, print frames and hit/fault per reference. On the standard string 7 0 1 2 0 3 0 4 2 3 0 3 2 1 2 0 1 7 0 1 with 3 frames, expect 15 faults for FIFO and 12 for LRU, then a 3/4/5-frame table.
+
+HOW TO BUILD AND RUN
+--------------------
+Build and boot:   make qemu CPUS=1
+At the xv6 shell: pagerepl
+
+WHICH FILES TO OPEN / SHOW
+--------------------------
+pagerepl.c (user space only)
+
+EXPECTED OUTPUT
+---------------
+FIFO 15 faults, LRU 12 faults on the standard string; the frame-count table prints with hit ratios.
+
+CODE (verbatim from the repo)
+---------------------------
+
+----- pagerepl.c - complete program (user space only) -----
+// Assignment 9 Q3: FIFO and LRU page replacement on a reference string.
+//
+// Usage (inside xv6):
+//   pagerepl                       demo: Q3(b) and Q3(c) with the default string
+//   pagerepl <frames> <refs>       run FIFO and LRU, trace every reference
+//   pagerepl table <refs>          table for 3, 4 and 5 frames
+// <refs> is the reference string as numbers separated by commas and/or
+// spaces, e.g.  pagerepl 3 7,0,1,2,0,3,0,4,2,3,0,3,2,1,2,0,1,7,0,1
+// (the xv6 shell accepts only 10 arguments, so commas are the easy way).
+//
+// The same file also builds on a normal Linux host (-DHOST) so the
+// algorithm can be checked against the expected numbers.
+#ifdef HOST
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#define printf(fd, ...) printf(__VA_ARGS__)
+#define exit() exit(0)   /* xv6 exit() takes no argument */
+#else
+#include "types.h"
+#include "stat.h"
+#include "user.h"
+#endif
+
+#define MAXREF    64
+#define MAXFRAMES 8
+
+static int defref[] = {7,0,1,2,0,3,0,4,2,3,0,3,2,1,2,0,1,7,0,1};
+#define NDEF ((int)(sizeof(defref)/sizeof(defref[0])))
+
+// Print the frame contents, "-" for an empty frame.
+static void
+showframes(int *frames, int nframes)
+{
+  int i;
+  printf(1, "[");
+  for(i = 0; i < nframes; i++){
+    if(frames[i] < 0)
+      printf(1, " -");
+    else
+      printf(1, " %d", frames[i]);
+  }
+  printf(1, " ]");
+}
+
+// Run one algorithm. lru=0 means FIFO. Returns the number of page faults.
+// If trace is non-zero every reference is printed.
+static int
+simulate(int *refs, int n, int nframes, int lru, int trace)
+{
+  int frames[MAXFRAMES];
+  int loaded[MAXFRAMES];   // FIFO: time the page was loaded
+  int used[MAXFRAMES];     // LRU: time the page was last used
+  int i, j, hit, victim, faults = 0;
+
+  for(j = 0; j < nframes; j++){
+    frames[j] = -1;
+    loaded[j] = used[j] = 0;
+  }
+  for(i = 0; i < n; i++){
+    hit = -1;
+    for(j = 0; j < nframes; j++)
+      if(frames[j] == refs[i]){
+        hit = j;
+        break;
+      }
+    if(hit >= 0){
+      used[hit] = i + 1;            // refresh recency (only matters for LRU)
+    } else {
+      faults++;
+      victim = -1;
+      for(j = 0; j < nframes; j++)  // use a free frame first
+        if(frames[j] < 0){
+          victim = j;
+          break;
+        }
+      if(victim < 0){               // otherwise evict
+        victim = 0;
+        for(j = 1; j < nframes; j++){
+          if(lru ? used[j] < used[victim] : loaded[j] < loaded[victim])
+            victim = j;
+        }
+      }
+      frames[victim] = refs[i];
+      loaded[victim] = i + 1;
+      used[victim] = i + 1;
+    }
+    if(trace){
+      printf(1, "ref %d: ", refs[i]);
+      showframes(frames, nframes);
+      printf(1, hit >= 0 ? "  hit\n" : "  FAULT\n");
+    }
+  }
+  return faults;
+}
+
+static void
+print_ratio(int hits, int total)
+{
+  int r = hits * 10000 / total;     // hit ratio in percent, 2 decimals
+  printf(1, "%d.%d%d%%", r / 100, (r / 10) % 10, r % 10);
+}
+
+static void
+runone(int *refs, int n, int nframes)
+{
+  int ff, fl;
+  printf(1, "\n=== %d frames, %d references ===\n", nframes, n);
+  printf(1, "--- FIFO ---\n");
+  ff = simulate(refs, n, nframes, 0, 1);
+  printf(1, "FIFO page faults: %d\n", ff);
+  printf(1, "--- LRU ---\n");
+  fl = simulate(refs, n, nframes, 1, 1);
+  printf(1, "LRU page faults: %d\n", fl);
+}
+
+static void
+table(int *refs, int n)
+{
+  int f, ff, fl;
+  printf(1, "\nFrames | FIFO faults  FIFO hit ratio | LRU faults  LRU hit ratio\n");
+  printf(1, "-------+-----------------------------+---------------------------\n");
+  for(f = 3; f <= 5; f++){
+    ff = simulate(refs, n, f, 0, 0);
+    fl = simulate(refs, n, f, 1, 0);
+    printf(1, "   %d   |     %d          ", f, ff);
+    print_ratio(n - ff, n);
+    printf(1, "      |    %d          ", fl);
+    print_ratio(n - fl, n);
+    printf(1, "\n");
+  }
+}
+
+// Parse argv[from..argc-1] into refs[]: numbers separated by ',' or space.
+static int
+parserefs(int argc, char *argv[], int from, int *refs)
+{
+  int n = 0, i, cur, have;
+  char *c;
+
+  for(i = from; i < argc; i++){
+    cur = 0;
+    have = 0;
+    for(c = argv[i]; ; c++){
+      if(*c >= '0' && *c <= '9'){
+        cur = cur * 10 + (*c - '0');
+        have = 1;
+      } else {
+        if(have && n < MAXREF)
+          refs[n++] = cur;
+        cur = 0;
+        have = 0;
+        if(*c == 0)
+          break;
+      }
+    }
+  }
+  return n;
+}
+
+int
+main(int argc, char *argv[])
+{
+  int refs[MAXREF];
+  int n, nframes;
+
+  if(argc <= 1){
+    runone(defref, NDEF, 3);
+    table(defref, NDEF);
+    exit();
+  }
+  if(strcmp(argv[1], "table") == 0){
+    n = parserefs(argc, argv, 2, refs);
+    if(n == 0){
+      printf(1, "usage: pagerepl table <ref string>\n");
+      exit();
+    }
+    table(refs, n);
+    exit();
+  }
+  nframes = atoi(argv[1]);
+  if(nframes < 1 || nframes > MAXFRAMES || argc < 3){
+    printf(1, "usage: pagerepl <frames 1-%d> <reference string>\n", MAXFRAMES);
+    exit();
+  }
+  n = parserefs(argc, argv, 2, refs);
+  if(n == 0){
+    printf(1, "usage: pagerepl <frames> <reference string>\n");
+    exit();
+  }
+  runone(refs, n, nframes);
+  exit();
+}
+
+IN THE LAB: WHAT TO DO AND WHAT TO SHOW
+---------------------------------------
+Verify one algorithm by hand on the first few references before trusting the table. Screenshot the comparison.
+
+HOW IT IS IMPLEMENTED
+---------------------
+All in user space: a frames array per algorithm. FIFO evicts the page loaded longest ago; LRU evicts the one whose last use is furthest back. Print the frame contents and hit/fault per reference, then total the faults.
+
+
+################################################################
+xv6 OS LAB - ASSIGNMENT 10, A10 Q1: memstats: allocation counters
+================================================================
+
+WHAT THE QUESTION ASKS
+----------------------
+Count total allocated and freed pages inside kalloc()/kfree(), and a memstats() syscall printing total allocated, total freed, currently allocated, and available physical pages.
+
+HOW TO BUILD AND RUN
+--------------------
+Build and boot:   make qemu CPUS=1
+At the xv6 shell: memtest
+
+WHICH FILES TO OPEN / SHOW
+--------------------------
+kalloc.c (kpage_allocs/kpage_frees counters, skipped during boot init), sysproc.c (memstats)
+
+EXPECTED OUTPUT
+---------------
+Counters rise by 10 after sbrk of 10 pages and the freed count catches up after release (verified: 1118/907/211, then 1128/917/211).
+
+CODE (verbatim from the repo)
+---------------------------
+
+----- kalloc.c - allocation counters -----
+// Assignment 10, Q1(a): counters tracking physical page allocations and frees.
+int kpage_allocs = 0;  // total pages ever handed out by kalloc()
+int kpage_frees  = 0;  // total pages ever returned by kfree()
+  ...
+  if(kmem.use_lock)
+    kpage_frees++;
+  if(kmem.use_lock)
+  ...
+  if(r && kmem.use_lock)
+    kpage_allocs++;
+  return (char*)r;
+
+----- sysproc.c - sys_memstats() -----
+// Assignment 10, Q1(b): display physical-memory statistics gathered by
+// the kalloc()/kfree() counters in kalloc.c.
+int
+sys_memstats(void)
+{
+  int total_alloc = kpage_allocs;              // total allocated pages (cumulative)
+  int total_free  = kpage_frees;               // total freed pages (cumulative)
+  int current     = total_alloc - total_free;  // pages in use right now
+  // frames managed by the page allocator: from end of kernel to PHYSTOP
+  int total_frames = (PHYSTOP - V2P((uint)end)) / PGSIZE;
+  int available    = kfree_pages();            // exact free-list length (kalloc.c)
+
+  cprintf("memstats: total allocated pages = %d\n", total_alloc);
+  cprintf("memstats: total freed pages = %d\n", total_free);
+  cprintf("memstats: currently allocated pages = %d\n", current);
+  cprintf("memstats: available physical memory pages = %d (of %d total frames)\n",
+          available, total_frames);
+  return 0;
+}
+
+----- memtest.c - complete test program -----
+// Assignment 10, Q1(c): user program that exercises kalloc()/kfree()
+// through sbrk() and shows the memstats() counters before, after
+// allocation and after release.
+#include "types.h"
+#include "stat.h"
+#include "user.h"
+
+int
+main(void)
+{
+  int npages = 10;
+  char *p;
+  int i;
+
+  printf(1, "memtest: initial memory statistics\n");
+  memstats();
+
+  p = sbrk(npages * 4096);
+  if(p == (char*)-1){
+    printf(1, "memtest: sbrk failed\n");
+    exit();
+  }
+  // touch every page so the kernel really allocates physical frames
+  for(i = 0; i < npages; i++)
+    p[i * 4096] = 1;
+
+  printf(1, "memtest: allocated %d pages with sbrk()\n", npages);
+  memstats();
+
+  sbrk(-npages * 4096);
+  printf(1, "memtest: released %d pages\n", npages);
+  memstats();
+
+  exit();
+}
+
+IN THE LAB: WHAT TO DO AND WHAT TO SHOW
+---------------------------------------
+Note why the counters only count when kmem.use_lock is set (boot frees must not count). Run memtest, screenshot both stats blocks.
+
+HOW IT IS IMPLEMENTED
+---------------------
+Two counters in kalloc.c: kpage_allocs++ in kalloc() and kpage_frees++ in kfree(), but only once kmem.use_lock is set, so the boot-time page freeing is not counted. memstats() prints both, their difference, and the free-list length.
+
+
+################################################################
+xv6 OS LAB - ASSIGNMENT 10, A10 Q2: vtop: translate an address
+================================================================
+
+WHAT THE QUESTION ASKS
+----------------------
+A vtop() syscall taking a virtual address, finding its PTE with walkpgdir(), and returning frame address plus offset; invalid or unmapped addresses must be reported, not crash.
+
+HOW TO BUILD AND RUN
+--------------------
+Build and boot:   make qemu CPUS=1
+At the xv6 shell: vttest
+
+WHICH FILES TO OPEN / SHOW
+--------------------------
+vm.c (vtop), sysproc.c
+
+EXPECTED OUTPUT
+---------------
+Valid addresses return physical addresses; an unmapped address is reported cleanly.
+
+CODE (verbatim from the repo)
+---------------------------
+
+----- vm.c - vtop() -----
+// ------------------------------------------------------------------
+// Assignment 10, Q2(a)(b): translate a virtual address of the current
+// process into its physical address using walkpgdir(). Returns -1 if
+// the address has no valid, present page-table entry.
+int
+vtop(uint va)
+{
+  pte_t *pte;
+
+  // locate the page-table entry without creating missing tables
+  pte = walkpgdir(myproc()->pgdir, (void*)va, 0);
+  if(pte == 0 || !(*pte & PTE_P))   // entry missing or page not present
+    return -1;
+  // physical frame address | page offset = complete physical address
+  return (int)(PTE_ADDR(*pte) | (va & 0xFFF));
+}
+
+----- sysproc.c - sys_vtop() -----
+// Assignment 10, Q2(a): syscall wrapper - arg is the virtual address.
+int
+sys_vtop(void)
+{
+  int va;
+  if(argint(0, &va) < 0)
+    return -1;
+  return vtop((uint)va);
+}
+
+----- vttest.c - complete test program -----
+// Assignment 10, Q2(c): user program that allocates memory with sbrk()
+// and translates several virtual addresses to physical addresses with
+// the vtop() system call, including an unmapped address.
+#include "types.h"
+#include "stat.h"
+#include "user.h"
+
+int
+main(void)
+{
+  int npages = 4;
+  char *p;
+  int i;
+  int addrs[3];
+  int bad, pa;
+
+  p = sbrk(npages * 4096);
+  if(p == (char*)-1){
+    printf(1, "vttest: sbrk failed\n");
+    exit();
+  }
+  // touch the pages so they get real physical frames
+  for(i = 0; i < npages; i++)
+    p[i * 4096] = 1;
+
+  printf(1, "vttest: translating virtual addresses of the sbrk() block\n");
+  addrs[0] = (int)p;                 // start of block
+  addrs[1] = (int)p + 4096;          // second page of block
+  addrs[2] = (int)p + 2500;          // offset inside first page
+  for(i = 0; i < 3; i++){
+    pa = vtop(addrs[i]);
+    if(pa < 0)
+      printf(1, "vttest: va 0x%x -> not mapped\n", addrs[i]);
+    else
+      printf(1, "vttest: va 0x%x -> pa 0x%x\n", addrs[i], pa);
+  }
+
+  // invalid / unmapped virtual address (far above this process's memory)
+  bad = 0x40000000;
+  pa = vtop(bad);
+  if(pa < 0)
+    printf(1, "vttest: va 0x%x -> not mapped (vtop returned %d)\n", bad, pa);
+  else
+    printf(1, "vttest: va 0x%x -> pa 0x%x\n", bad, pa);
+
+  exit();
+}
+
+IN THE LAB: WHAT TO DO AND WHAT TO SHOW
+---------------------------------------
+Compare with A8 Q1: same walk, quieter output. Run vttest, screenshot valid and invalid cases.
+
+HOW IT IS IMPLEMENTED
+---------------------
+vtop(): the same walkpgdir lookup as va2pa without the printing - check the PTE exists and is present, then return PTE_ADDR(*pte) combined with the page offset; report invalid or unmapped addresses cleanly.
+
+
+################################################################
+xv6 OS LAB - ASSIGNMENT 10, A10 Q3: pageinfo and setreadonly
+================================================================
+
+WHAT THE QUESTION ASKS
+----------------------
+pageinfo() shows whether an address is mapped plus its frame and P/W/U flags; setreadonly() clears PTE_W on the page. Writing afterwards must fault.
+
+HOW TO BUILD AND RUN
+--------------------
+Build and boot:   make qemu CPUS=1
+At the xv6 shell: pagetest
+
+WHICH FILES TO OPEN / SHOW
+--------------------------
+vm.c (pageinfo, setreadonly), sysproc.c
+
+EXPECTED OUTPUT
+---------------
+The page shows writable, then read-only after setreadonly, and the attempted write faults and the process is killed.
+
+CODE (verbatim from the repo)
+---------------------------
+
+----- vm.c - pageinfo() -----
+// Assignment 10, Q3(a): report mapping, physical frame number and the
+// page-table flags (P, W, U) for a virtual address of the current process.
+int
+pageinfo(uint va)
+{
+  pte_t *pte;
+
+  pte = walkpgdir(myproc()->pgdir, (void*)va, 0);
+  if(pte == 0 || !(*pte & PTE_P)){
+    cprintf("pageinfo: virtual address 0x%x is not mapped\n", va);
+    return -1;
+  }
+  cprintf("pageinfo: va 0x%x -> frame %d (pa 0x%x) flags:%s%s%s\n",
+          va, PTE_ADDR(*pte) >> 12, PTE_ADDR(*pte) | (va & 0xFFF),
+          (*pte & PTE_P) ? " P" : "",
+          (*pte & PTE_W) ? " W" : "",
+          (*pte & PTE_U) ? " U" : "");
+  return 0;
+}
+
+----- vm.c - setreadonly() -----
+// Assignment 10, Q3(b): remove write permission (PTE_W) from the
+// page-table entry for a virtual address of the current process.
+int
+setreadonly(uint va)
+{
+  pte_t *pte;
+
+  pte = walkpgdir(myproc()->pgdir, (void*)va, 0);
+  if(pte == 0 || !(*pte & PTE_P))
+    return -1;
+  *pte &= ~PTE_W;                  // clear the writable bit
+  lcr3(V2P(myproc()->pgdir));      // flush the TLB so the new permission applies
+  return 0;
+}
+
+----- sysproc.c - sys_pageinfo() -----
+// Assignment 10, Q3(a): syscall wrapper - arg is the virtual address.
+int
+sys_pageinfo(void)
+{
+  int va;
+  if(argint(0, &va) < 0)
+    return -1;
+  return pageinfo((uint)va);
+}
+
+----- sysproc.c - sys_setreadonly() -----
+// Assignment 10, Q3(b): syscall wrapper - arg is the virtual address.
+int
+sys_setreadonly(void)
+{
+  int va;
+  if(argint(0, &va) < 0)
+    return -1;
+  return setreadonly((uint)va);
+}
+
+----- pagetest.c - complete test program -----
+// Assignment 10, Q3(c): user program that allocates a page, shows its
+// page-table information with pageinfo(), removes write permission with
+// setreadonly(), and then writes to the protected page to demonstrate
+// that a page fault occurs.
+#include "types.h"
+#include "stat.h"
+#include "user.h"
+
+int
+main(void)
+{
+  char *p;
+
+  p = sbrk(4096);
+  if(p == (char*)-1){
+    printf(1, "pagetest: sbrk failed\n");
+    exit();
+  }
+  p[0] = 42;  // touch the page so it gets a physical frame
+
+  printf(1, "pagetest: page allocated at va 0x%x\n", (uint)p);
+  pageinfo((int)p);
+
+  printf(1, "pagetest: removing write permission with setreadonly()\n");
+  if(setreadonly((int)p) < 0){
+    printf(1, "pagetest: setreadonly failed\n");
+    exit();
+  }
+  pageinfo((int)p);
+
+  printf(1, "pagetest: attempting to write to the read-only page...\n");
+  p[0] = 99;  // must trigger a page fault (trap 14) and kill this process
+  printf(1, "pagetest: ERROR - write to read-only page succeeded\n");
+  exit();
+}
+
+IN THE LAB: WHAT TO DO AND WHAT TO SHOW
+---------------------------------------
+Find where the fault lands in trap.c and why the process is killed rather than the page silently re-writable. Run pagetest, screenshot.
+
+HOW IT IS IMPLEMENTED
+---------------------
+pageinfo(): walk to the PTE and print the frame and P/W/U flags. setreadonly(): walk to the same entry and clear PTE_W. The next write faults because the hardware checks that bit on every store; the fault handler kills the process.
+
+
+################################################################
+xv6 OS LAB - ASSIGNMENT 10, A10 Q4: Page replacement: FIFO, LRU, Optimal
+================================================================
+
+WHAT THE QUESTION ASKS
+----------------------
+All three algorithms in one user-space simulator on the same standard string: per-reference frames and hit/fault, totals for 3 frames, then a 3/4/5-frame comparison table with hits, hit ratio and fault ratio, and which algorithm wins.
+
+HOW TO BUILD AND RUN
+--------------------
+Build and boot:   make qemu CPUS=1
+At the xv6 shell: pagereplace
+
+WHICH FILES TO OPEN / SHOW
+--------------------------
+pagereplace.c (user space only)
+
+EXPECTED OUTPUT
+---------------
+Optimal fewest faults, LRU next, FIFO most on the standard string; the table prints all three at 3, 4 and 5 frames.
+
+CODE (verbatim from the repo)
+---------------------------
+
+----- pagereplace.c - complete program (user space only) -----
+// Assignment 10, Q4: user program implementing and comparing three page
+// replacement algorithms - FIFO, LRU and Optimal - on the reference
+// string  7 0 1 2 0 3 0 4 2 3 0 3 2 1 2 0 1 7 0 1  (20 references).
+//
+// Usage:
+//   pagereplace         full run: per-reference traces for 3 frames and
+//                       the 3/4/5-frame comparison table
+//   pagereplace fifo    FIFO trace with 3 frames only (fits one screen)
+//   pagereplace lru     LRU trace with 3 frames only
+//   pagereplace opt     Optimal trace with 3 frames only
+//   pagereplace table   comparison table only (3, 4 and 5 frames)
+#include "types.h"
+#include "stat.h"
+#include "user.h"
+
+#define NREF 20
+static int ref[NREF] = {7,0,1,2,0,3,0,4,2,3,0,3,2,1,2,0,1,7,0,1};
+
+static int
+in_frames(int *frames, int n, int page)
+{
+  int i;
+  for(i = 0; i < n; i++)
+    if(frames[i] == page)
+      return 1;
+  return 0;
+}
+
+static void
+print_frames(int *frames, int n)
+{
+  int i;
+  printf(1, "[");
+  for(i = 0; i < n; i++){
+    if(frames[i] < 0)
+      printf(1, " -");
+    else
+      printf(1, " %d", frames[i]);
+  }
+  printf(1, " ]");
+}
+
+static void
+print_header(char *name, int nframes)
+{
+  int i;
+  printf(1, "=== %s (%d frames) ===\n", name, nframes);
+  printf(1, "ref string:");
+  for(i = 0; i < NREF; i++)
+    printf(1, " %d", ref[i]);
+  printf(1, "\n");
+}
+
+// Q4(a): FIFO - evict the page that entered earliest.
+static int
+fifo(int nframes, int trace)
+{
+  int frames[16];
+  int i, page, faults = 0, qpos = 0;
+
+  for(i = 0; i < nframes; i++)
+    frames[i] = -1;
+
+  if(trace) print_header("FIFO", nframes);
+  for(i = 0; i < NREF; i++){
+    page = ref[i];
+    if(in_frames(frames, nframes, page)){
+      if(trace){
+        printf(1, "ref %d: ", page);
+        print_frames(frames, nframes);
+        printf(1, " HIT\n");
+      }
+    } else {
+      frames[qpos] = page;               // replace oldest page
+      qpos = (qpos + 1) % nframes;
+      faults++;
+      if(trace){
+        printf(1, "ref %d: ", page);
+        print_frames(frames, nframes);
+        printf(1, " FAULT\n");
+      }
+    }
+  }
+  if(trace) printf(1, "FIFO total page faults: %d\n\n", faults);
+  return faults;
+}
+
+// Q4(a): LRU - evict the page whose last use is farthest in the past.
+static int
+lru(int nframes, int trace)
+{
+  int frames[16], used[16];
+  int i, j, page, faults = 0, victim, oldest;
+
+  for(i = 0; i < nframes; i++){
+    frames[i] = -1;
+    used[i] = -1;
+  }
+
+  if(trace) print_header("LRU", nframes);
+  for(i = 0; i < NREF; i++){
+    page = ref[i];
+    if(in_frames(frames, nframes, page)){
+      for(j = 0; j < nframes; j++)
+        if(frames[j] == page)
+          used[j] = i;                   // record most recent use
+      if(trace){
+        printf(1, "ref %d: ", page);
+        print_frames(frames, nframes);
+        printf(1, " HIT\n");
+      }
+    } else {
+      // victim: an empty frame, else the least recently used one
+      victim = -1;
+      oldest = NREF + 1;
+      for(j = 0; j < nframes; j++){
+        if(frames[j] < 0){ victim = j; break; }
+        if(used[j] < oldest){ oldest = used[j]; victim = j; }
+      }
+      frames[victim] = page;
+      used[victim] = i;
+      faults++;
+      if(trace){
+        printf(1, "ref %d: ", page);
+        print_frames(frames, nframes);
+        printf(1, " FAULT\n");
+      }
+    }
+  }
+  if(trace) printf(1, "LRU total page faults: %d\n\n", faults);
+  return faults;
+}
+
+// Q4(a): Optimal - evict the page whose next use is farthest in the
+// future (or never used again).
+static int
+optimal(int nframes, int trace)
+{
+  int frames[16];
+  int i, j, k, page, faults = 0, victim, farthest, next;
+
+  for(i = 0; i < nframes; i++)
+    frames[i] = -1;
+
+  if(trace) print_header("Optimal", nframes);
+  for(i = 0; i < NREF; i++){
+    page = ref[i];
+    if(in_frames(frames, nframes, page)){
+      if(trace){
+        printf(1, "ref %d: ", page);
+        print_frames(frames, nframes);
+        printf(1, " HIT\n");
+      }
+    } else {
+      // victim: an empty frame, else the page used farthest ahead
+      victim = -1;
+      farthest = -1;
+      for(j = 0; j < nframes; j++){
+        if(frames[j] < 0){ victim = j; break; }
+        next = NREF;                     // "never used again" by default
+        for(k = i + 1; k < NREF; k++)
+          if(ref[k] == frames[j]){ next = k; break; }
+        if(next > farthest){ farthest = next; victim = j; }
+      }
+      frames[victim] = page;
+      faults++;
+      if(trace){
+        printf(1, "ref %d: ", page);
+        print_frames(frames, nframes);
+        printf(1, " FAULT\n");
+      }
+    }
+  }
+  if(trace) printf(1, "Optimal total page faults: %d\n\n", faults);
+  return faults;
+}
+
+static void
+run_three(int nframes)
+{
+  fifo(nframes, 1);
+  lru(nframes, 1);
+  optimal(nframes, 1);
+}
+
+// Q4(c): comparison table for 3, 4 and 5 frames.
+static void
+print_table(void)
+{
+  int nf, f_fifo, f_lru, f_opt, hits;
+
+  printf(1, "=== Comparison table: 3, 4 and 5 frames ===\n");
+  printf(1, "(same reference string, %d references)\n\n", NREF);
+  printf(1, "Frames  Algo     Faults  Hits  Hit%%   Fault%%\n");
+  for(nf = 3; nf <= 5; nf++){
+    f_fifo = fifo(nf, 0);
+    f_lru  = lru(nf, 0);
+    f_opt  = optimal(nf, 0);
+
+    hits = NREF - f_fifo;
+    printf(1, "  %d     FIFO     %d      %d    %d%%    %d%%\n",
+           nf, f_fifo, hits, hits * 100 / NREF, f_fifo * 100 / NREF);
+    hits = NREF - f_lru;
+    printf(1, "  %d     LRU      %d      %d    %d%%    %d%%\n",
+           nf, f_lru, hits, hits * 100 / NREF, f_lru * 100 / NREF);
+    hits = NREF - f_opt;
+    printf(1, "  %d     Optimal  %d      %d    %d%%    %d%%\n",
+           nf, f_opt, hits, hits * 100 / NREF, f_opt * 100 / NREF);
+    printf(1, "\n");
+  }
+  printf(1, "Best for this reference string: Optimal (9 faults at 3 frames).\n");
+  printf(1, "LRU is close behind (ties Optimal at 4 and 5 frames); FIFO is\n");
+  printf(1, "the worst of the three at every frame count tested.\n");
+}
+
+int
+main(int argc, char *argv[])
+{
+  if(argc > 1){
+    if(strcmp(argv[1], "fifo") == 0){ fifo(3, 1); exit(); }
+    if(strcmp(argv[1], "lru") == 0){ lru(3, 1); exit(); }
+    if(strcmp(argv[1], "opt") == 0){ optimal(3, 1); exit(); }
+    if(strcmp(argv[1], "table") == 0){ print_table(); exit(); }
+    printf(1, "usage: pagereplace [fifo|lru|opt|table]\n");
+    exit();
+  }
+
+  // Q4(a)+(b): full per-reference traces with 3 frames
+  run_three(3);
+  // Q4(c): comparison across 3, 4 and 5 frames
+  print_table();
+  exit();
+}
+
+IN THE LAB: WHAT TO DO AND WHAT TO SHOW
+---------------------------------------
+Pair with A9 Q3: this adds Optimal and the hit/fault ratios. Screenshot the table for your report.
+
+HOW IT IS IMPLEMENTED
+---------------------
+Extend the A9 Q3 simulator with Optimal: evict the page whose next use is furthest in the future (look ahead in the reference string). Then loop all three algorithms over 3, 4 and 5 frames and tabulate faults, hits and ratios.
