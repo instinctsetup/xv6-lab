@@ -12,11 +12,222 @@ At the xv6 shell: readwrite
 
 WHICH FILES TO OPEN / SHOW
 --------------------------
-support/sem.c, readwrite.c (read_count, mutex and write semaphore)
+sem.c, readwrite.c (read_count, mutex and write semaphore)
 
 EXPECTED OUTPUT
 ---------------
 Concurrent reader overlap, and no reader or writer active during a write.
+
+CODE (verbatim from the repo)
+---------------------------
+
+----- sem.c - kernel semaphores (whole file) -----
+// sem.c - Kernel counting semaphores.
+//
+// Assignment 7, Question 2: counting semaphores on top of xv6's
+// sleep()/wakeup(), with the exact syscall surface the assignment asks for
+// (sem_init / sem_wait / sem_signal over a fixed array of 10 semaphores).
+// Assignment 5 (Questions 2-4) reuses the same semaphores for the
+// producer-consumer, readers-writers and dining-philosophers programs.
+//
+// sem_destroy() is an extension beyond the assignment text: it frees a
+// slot and wakes any waiters so a stuck program fails loudly instead of
+// hanging forever.
+
+#include "types.h"
+#include "defs.h"
+#include "param.h"
+#include "spinlock.h"
+#include "mmu.h"
+#include "proc.h"
+
+// ptable lives in proc.c; needed to index per-process hold counts.
+extern struct {
+  struct spinlock lock;
+  struct proc proc[NPROC];
+} ptable;
+
+#define NSEM 10   // assignment 7 Q2(c): fixed-size array of semaphores
+
+struct semaphore {
+  int used;              // slot allocated by sem_init
+  int value;             // current count
+  struct spinlock lk;    // protects value; sleep() releases it while blocked
+  int waiters;           // number of processes blocked on this semaphore
+  int owner[NPROC];      // per-proc hold count (Assignment 7 Q3 deadlock aid)
+};
+
+static struct semaphore sems[NSEM];
+
+int
+sem_init_id(int id, int value)
+{
+  struct semaphore *s;
+
+  if(id < 0 || id >= NSEM || value < 0)
+    return -1;
+  s = &sems[id];
+  acquire(&s->lk);
+  if(s->used){           // re-initialising a live semaphore is a caller bug
+    release(&s->lk);
+    return -1;
+  }
+  s->used = 1;
+  s->value = value;
+  s->waiters = 0;
+  memset(s->owner, 0, sizeof(s->owner));
+  release(&s->lk);
+  return 0;
+}
+
+int
+sem_wait_id(int id)
+{
+  struct semaphore *s;
+  struct proc *p;
+
+  if(id < 0 || id >= NSEM)
+    return -1;
+  s = &sems[id];
+  p = myproc();
+  acquire(&s->lk);
+  if(!s->used){
+    release(&s->lk);
+    return -1;
+  }
+  // Block while the count is exhausted. sleep() releases s->lk while
+  // blocked and re-acquires it before returning, so the value test stays
+  // atomic. proc->killed breaks the loop if the process is killed.
+  while(s->used && s->value == 0 && !(p && p->killed)){
+    s->waiters++;
+    if(p)
+      p->waiting_on = id;   // Assignment 7 Q3: wait-for bookkeeping
+    sleep(s, &s->lk);
+    s->waiters--;
+  }
+  if(p)
+    p->waiting_on = -1;
+  if(!s->used){             // sem_destroy() woke us: fail, don't re-sleep
+    release(&s->lk);
+    return -1;
+  }
+  if(p && p->killed){
+    release(&s->lk);
+    return -1;
+  }
+  s->value--;
+  if(p)
+    s->owner[p - ptable.proc]++;
+  release(&s->lk);
+  return 0;
+}
+
+int
+sem_signal_id(int id)
+{
+  struct semaphore *s;
+  struct proc *p;
+
+  if(id < 0 || id >= NSEM)
+    return -1;
+  s = &sems[id];
+  p = myproc();
+  acquire(&s->lk);
+  if(!s->used){
+    release(&s->lk);
+    return -1;
+  }
+  if(p && s->owner[p - ptable.proc] > 0)
+    s->owner[p - ptable.proc]--;
+  s->value++;
+  if(s->waiters > 0)
+    wakeup(s);          // wakes every sleeper; they re-check value under lk
+  release(&s->lk);
+  return 0;
+}
+
+int
+sem_destroy_id(int id)
+{
+  struct semaphore *s;
+
+  if(id < 0 || id >= NSEM)
+    return -1;
+  s = &sems[id];
+  acquire(&s->lk);
+  if(!s->used){
+    release(&s->lk);
+    return -1;
+  }
+  s->used = 0;
+  // Wake everyone blocked on the destroyed semaphore; they see used == 0
+  // on re-check and fail instead of sleeping forever.
+  wakeup(s);
+  release(&s->lk);
+  return 0;
+}
+
+----- readwrite.c - complete test program -----
+// Assignment 5, Question 3: readers-writers with kernel semaphores
+// (reader-preference form). Semaphores: 3 = room (writer lock),
+// 4 = mutex protecting readcount. Shared data in the shm_get() page.
+// Expected: writers apply their updates one at a time; final data value
+// equals the number of writer updates, and no reader ever observes the
+// intermediate "torn" value.
+#include "types.h"
+#include "stat.h"
+#include "user.h"
+
+#define NWRITERS 2
+#define WITER 20
+#define SEM_ROOM  3
+#define SEM_RMUTEX 4
+
+struct shared { int data; int torn; int readcount; };
+
+int
+main(void)
+{
+  struct shared *sh = (struct shared*)shm_get();
+  if((int)sh < 0){ printf(1, "readwrite: shm_get failed\n"); exit(); }
+  sh->data = 0; sh->torn = 0; sh->readcount = 0;
+  sem_init(SEM_ROOM, 1);
+  sem_init(SEM_RMUTEX, 1);
+
+  for(int w = 0; w < NWRITERS; w++){
+    if(fork() == 0){
+      sh = (struct shared*)shm_get();
+      for(int i = 0; i < WITER; i++){
+        sem_wait(SEM_ROOM);
+        sh->data++;              // critical section
+        sem_signal(SEM_ROOM);
+      }
+      exit();
+    }
+  }
+  for(int r = 0; r < 2; r++){
+    if(fork() == 0){
+      sh = (struct shared*)shm_get();
+      for(int i = 0; i < 200; i++){
+        sem_wait(SEM_RMUTEX);
+        sh->readcount++;
+        if(sh->readcount == 1) sem_wait(SEM_ROOM);
+        sem_signal(SEM_RMUTEX);
+        if(sh->data < 0 || sh->data > NWRITERS * WITER) sh->torn = 1;
+        sem_wait(SEM_RMUTEX);
+        sh->readcount--;
+        if(sh->readcount == 0) sem_signal(SEM_ROOM);
+        sem_signal(SEM_RMUTEX);
+      }
+      exit();
+    }
+  }
+  for(int i = 0; i < NWRITERS + 2; i++) wait();
+  printf(1, "readwrite: data=%d expected=%d torn=%d %s\n", sh->data,
+         NWRITERS * WITER, sh->torn,
+         (sh->data == NWRITERS * WITER && !sh->torn) ? "PASS" : "FAIL");
+  exit();
+}
 
 IN THE LAB: WHAT TO DO AND WHAT TO SHOW
 ---------------------------------------

@@ -12,11 +12,284 @@ At the xv6 shell: prodcons
 
 WHICH FILES TO OPEN / SHOW
 --------------------------
-support/sem.c (kernel semaphores), support/shm.c, prodcons.c
+sem.c (kernel semaphores), shm.c, prodcons.c
 
 EXPECTED OUTPUT
 ---------------
 Items 1 to 100 consumed in order; blocking and unblocking visible in the log.
+
+CODE (verbatim from the repo)
+---------------------------
+
+----- shm.c - kernel shared page (whole file) -----
+// shm.c - Assignment 5: one kernel-owned page shared between address spaces.
+//
+// The Assignment 5 questions (Peterson, producer-consumer, readers-writers,
+// dining philosophers) need shared memory, which stock xv6 lacks because
+// fork() copies the address space. shm_get() maps ONE kernel-owned frame
+// into the caller's page table and returns its user virtual address.
+// Parent and child each call shm_get() after fork() and thereby see the
+// same physical frame.
+//
+// Simplifications, documented per the assignment's "document and justify"
+// requirement:
+//  - A single global page (4 KB) is enough for every test program.
+//  - fork() copies the mapping as a private page too; the child must call
+//    shm_get() itself and use that address, which every test program does.
+//  - The frame is never freed (kernel-owned for the life of the boot).
+
+#include "types.h"
+#include "defs.h"
+#include "param.h"
+#include "memlayout.h"
+#include "mmu.h"
+#include "proc.h"
+#include "spinlock.h"
+#include "shm.h"
+
+static struct spinlock shmlock;
+static char *shm_frame = 0;    // kernel virtual address of the shared frame
+static int shmlock_ready = 0;
+
+int
+shm_get(void)
+{
+  struct proc *p = myproc();
+  uint va;
+
+  if(p == 0)
+    return -1;
+
+  // Lazily allocate the shared frame exactly once.
+  if(!shmlock_ready){
+    initlock(&shmlock, "shm");
+    shmlock_ready = 1;
+  }
+  acquire(&shmlock);
+  if(shm_frame == 0){
+    shm_frame = kalloc();
+    if(shm_frame == 0){
+      release(&shmlock);
+      return -1;
+    }
+    memset(shm_frame, 0, PGSIZE);
+  }
+  release(&shmlock);
+
+  // Map the frame at a FIXED virtual address just below KERNBASE,
+  // deliberately OUTSIDE [0, sz): fork() does not copy it (the child calls
+  // shm_get() itself and gets the same frame), and freevm() is taught in
+  // vm.c to skip it, so the kernel-owned frame is never returned to the
+  // allocator while still mapped - that aliasing bug corrupted memory.
+  va = SHM_VA;
+  if(uvmpresent(p->pgdir, va))
+    return (int)va;     // already mapped in this address space
+  if(mappages(p->pgdir, (char*)va, PGSIZE, V2P(shm_frame), PTE_W|PTE_U) < 0)
+    return -1;
+  return (int)va;
+}
+
+----- sem.c - kernel semaphores (whole file) -----
+// sem.c - Kernel counting semaphores.
+//
+// Assignment 7, Question 2: counting semaphores on top of xv6's
+// sleep()/wakeup(), with the exact syscall surface the assignment asks for
+// (sem_init / sem_wait / sem_signal over a fixed array of 10 semaphores).
+// Assignment 5 (Questions 2-4) reuses the same semaphores for the
+// producer-consumer, readers-writers and dining-philosophers programs.
+//
+// sem_destroy() is an extension beyond the assignment text: it frees a
+// slot and wakes any waiters so a stuck program fails loudly instead of
+// hanging forever.
+
+#include "types.h"
+#include "defs.h"
+#include "param.h"
+#include "spinlock.h"
+#include "mmu.h"
+#include "proc.h"
+
+// ptable lives in proc.c; needed to index per-process hold counts.
+extern struct {
+  struct spinlock lock;
+  struct proc proc[NPROC];
+} ptable;
+
+#define NSEM 10   // assignment 7 Q2(c): fixed-size array of semaphores
+
+struct semaphore {
+  int used;              // slot allocated by sem_init
+  int value;             // current count
+  struct spinlock lk;    // protects value; sleep() releases it while blocked
+  int waiters;           // number of processes blocked on this semaphore
+  int owner[NPROC];      // per-proc hold count (Assignment 7 Q3 deadlock aid)
+};
+
+static struct semaphore sems[NSEM];
+
+int
+sem_init_id(int id, int value)
+{
+  struct semaphore *s;
+
+  if(id < 0 || id >= NSEM || value < 0)
+    return -1;
+  s = &sems[id];
+  acquire(&s->lk);
+  if(s->used){           // re-initialising a live semaphore is a caller bug
+    release(&s->lk);
+    return -1;
+  }
+  s->used = 1;
+  s->value = value;
+  s->waiters = 0;
+  memset(s->owner, 0, sizeof(s->owner));
+  release(&s->lk);
+  return 0;
+}
+
+int
+sem_wait_id(int id)
+{
+  struct semaphore *s;
+  struct proc *p;
+
+  if(id < 0 || id >= NSEM)
+    return -1;
+  s = &sems[id];
+  p = myproc();
+  acquire(&s->lk);
+  if(!s->used){
+    release(&s->lk);
+    return -1;
+  }
+  // Block while the count is exhausted. sleep() releases s->lk while
+  // blocked and re-acquires it before returning, so the value test stays
+  // atomic. proc->killed breaks the loop if the process is killed.
+  while(s->used && s->value == 0 && !(p && p->killed)){
+    s->waiters++;
+    if(p)
+      p->waiting_on = id;   // Assignment 7 Q3: wait-for bookkeeping
+    sleep(s, &s->lk);
+    s->waiters--;
+  }
+  if(p)
+    p->waiting_on = -1;
+  if(!s->used){             // sem_destroy() woke us: fail, don't re-sleep
+    release(&s->lk);
+    return -1;
+  }
+  if(p && p->killed){
+    release(&s->lk);
+    return -1;
+  }
+  s->value--;
+  if(p)
+    s->owner[p - ptable.proc]++;
+  release(&s->lk);
+  return 0;
+}
+
+int
+sem_signal_id(int id)
+{
+  struct semaphore *s;
+  struct proc *p;
+
+  if(id < 0 || id >= NSEM)
+    return -1;
+  s = &sems[id];
+  p = myproc();
+  acquire(&s->lk);
+  if(!s->used){
+    release(&s->lk);
+    return -1;
+  }
+  if(p && s->owner[p - ptable.proc] > 0)
+    s->owner[p - ptable.proc]--;
+  s->value++;
+  if(s->waiters > 0)
+    wakeup(s);          // wakes every sleeper; they re-check value under lk
+  release(&s->lk);
+  return 0;
+}
+
+int
+sem_destroy_id(int id)
+{
+  struct semaphore *s;
+
+  if(id < 0 || id >= NSEM)
+    return -1;
+  s = &sems[id];
+  acquire(&s->lk);
+  if(!s->used){
+    release(&s->lk);
+    return -1;
+  }
+  s->used = 0;
+  // Wake everyone blocked on the destroyed semaphore; they see used == 0
+  // on re-check and fail instead of sleeping forever.
+  wakeup(s);
+  release(&s->lk);
+  return 0;
+}
+
+----- prodcons.c - complete test program -----
+// Assignment 5, Question 2: producer-consumer with kernel semaphores.
+// One producer, one consumer, bounded buffer in the shm_get() page.
+// Semaphores: 0 = empty slots (N), 1 = full slots (0), 2 = mutex (1).
+// Expected: consumer sees every produced value exactly once, in order.
+#include "types.h"
+#include "stat.h"
+#include "user.h"
+
+#define N 8
+#define ITEMS 100
+#define SEM_EMPTY 0
+#define SEM_FULL  1
+#define SEM_MUTEX 2
+
+struct shared { int buf[N]; int in; int out; };
+
+int
+main(void)
+{
+  struct shared *sh = (struct shared*)shm_get();
+  if((int)sh < 0){ printf(1, "prodcons: shm_get failed\n"); exit(); }
+  sh->in = sh->out = 0;
+  sem_init(SEM_EMPTY, N);
+  sem_init(SEM_FULL, 0);
+  sem_init(SEM_MUTEX, 1);
+
+  int pid = fork();
+  if(pid == 0){
+    sh = (struct shared*)shm_get();   // same frame in the child
+    for(int i = 1; i <= ITEMS; i++){  // producer
+      sem_wait(SEM_EMPTY);
+      sem_wait(SEM_MUTEX);
+      sh->buf[sh->in] = i;
+      sh->in = (sh->in + 1) % N;
+      sem_signal(SEM_MUTEX);
+      sem_signal(SEM_FULL);
+    }
+    exit();
+  }
+  // consumer (parent)
+  int ok = 1;
+  for(int i = 1; i <= ITEMS; i++){
+    sem_wait(SEM_FULL);
+    sem_wait(SEM_MUTEX);
+    int v = sh->buf[sh->out];
+    sh->out = (sh->out + 1) % N;
+    sem_signal(SEM_MUTEX);
+    sem_signal(SEM_EMPTY);
+    if(v != i) ok = 0;
+  }
+  wait();
+  printf(1, "prodcons: %d items %s\n", ITEMS, ok ? "PASS" : "FAIL");
+  exit();
+}
 
 IN THE LAB: WHAT TO DO AND WHAT TO SHOW
 ---------------------------------------

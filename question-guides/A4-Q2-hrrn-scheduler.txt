@@ -18,6 +18,77 @@ EXPECTED OUTPUT
 ---------------
 Short jobs run early, and a long job eventually wins as its wait time grows (verified).
 
+CODE (verbatim from the repo)
+---------------------------
+
+----- proc.h - struct proc fields -----
+  // Scheduler fields (Assignments 3 and 4; see sched.h for the policy).
+  uint ctime;                  // A3 Q1/A4 Q2: creation time in ticks
+  int burst_time;              // A3 Q3/A4: estimated burst, -1 = unset
+  ...
+  int priority;                // A3 Q2/A7 Q4: 1 = highest .. 20 = lowest
+  uint ready_since;            // aging + HRRN: tick when last became RUNNABLE
+  uint heap_start;             // A8 Q4 (lazy): lowest valid lazy heap address
+
+----- proc.c - key(), HRRN case -----
+// ... inside key(): switch(SCHED) ...
+  case SCHED_HRRN: {                  // A4 Q2: highest response ratio wins,
+    // so we return the inverse as a "lowest wins" key. Response ratio
+    // rr = (waiting + burst) / burst; rr >= 1, so 1000000/rr orders the
+    // largest rr first. Waiting time uses ticks since the process last
+    // became RUNNABLE.
+    int b = p->burst_time < 0 ? DEFAULT_BURST : p->burst_time;
+    uint w = ticks - p->ready_since;
+    uint rr = w + (uint)b;            // (w+b)/b with b folded out below
+    if(b <= 0) b = 1;
+    return 1000000U / (rr / (uint)b + 1);
+  }
+
+----- hrrntest.c - complete test program -----
+// Assignment 4, Question 2 test: HRRN (highest response ratio next).
+// Build and run with: make qemu SCHED=HRRN CPUS=1
+//
+// The parent hogs the (non-preemptive) CPU for ~30 ticks after creating
+// the LONG job, so the long job accumulates waiting time. The short jobs
+// are created only afterwards. Under SJF the shorts would run first; HRRN
+// picks the long job because its response ratio (w+b)/b has grown past
+// the shorts' - this is the anti-starvation property the question asks
+// to demonstrate.
+// Expected: the long job (burst 60) finishes FIRST, then the shorts.
+#include "types.h"
+#include "stat.h"
+#include "user.h"
+#include "pinfo.h"
+
+static void work(int me, int burst)
+{
+  volatile int i, x = 0;
+  sleep(25);
+  for(i = 0; i < burst * 1000000; i++) x += i;
+  struct pinfo pi;
+  getpinfo(&pi);
+  printf(1, "hrrn: child %d done (burst %d, waited %d)\n",
+         me, burst, uptime() - pi.ctime - pi.rtime);
+  exit();
+}
+
+int
+main(void)
+{
+  volatile int i, x = 0;
+  int p0, p1, p2;
+  if((p0 = fork()) == 0) work(0, 60);      // long job waits from t~0
+  set_burst(p0, 60);
+  for(i = 0; i < 90000000; i++) x += i;    // parent hogs CPU ~30 ticks
+  if((p1 = fork()) == 0) work(1, 10);      // shorts arrive late
+  set_burst(p1, 10);
+  if((p2 = fork()) == 0) work(2, 10);
+  set_burst(p2, 10);
+  wait(); wait(); wait();
+  printf(1, "hrrn: test complete\n");
+  exit();
+}
+
 IN THE LAB: WHAT TO DO AND WHAT TO SHOW
 ---------------------------------------
 Read how the HRRN key inverts the ratio so "lowest key wins" still works. Run hrrntest, screenshot.

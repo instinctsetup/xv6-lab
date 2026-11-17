@@ -12,11 +12,231 @@ At the xv6 shell: synctest
 
 WHICH FILES TO OPEN / SHOW
 --------------------------
-support/sem.c (the semaphore array), sysproc.c (wrappers), synctest.c
+sem.c (the semaphore array), sysproc.c (wrappers), synctest.c
 
 EXPECTED OUTPUT
 ---------------
 counter = 6000 exactly (verified); the producer-consumer log shows no overflow or underflow.
+
+CODE (verbatim from the repo)
+---------------------------
+
+----- sem.c - the semaphore array (whole file) -----
+// sem.c - Kernel counting semaphores.
+//
+// Assignment 7, Question 2: counting semaphores on top of xv6's
+// sleep()/wakeup(), with the exact syscall surface the assignment asks for
+// (sem_init / sem_wait / sem_signal over a fixed array of 10 semaphores).
+// Assignment 5 (Questions 2-4) reuses the same semaphores for the
+// producer-consumer, readers-writers and dining-philosophers programs.
+//
+// sem_destroy() is an extension beyond the assignment text: it frees a
+// slot and wakes any waiters so a stuck program fails loudly instead of
+// hanging forever.
+
+#include "types.h"
+#include "defs.h"
+#include "param.h"
+#include "spinlock.h"
+#include "mmu.h"
+#include "proc.h"
+
+// ptable lives in proc.c; needed to index per-process hold counts.
+extern struct {
+  struct spinlock lock;
+  struct proc proc[NPROC];
+} ptable;
+
+#define NSEM 10   // assignment 7 Q2(c): fixed-size array of semaphores
+
+struct semaphore {
+  int used;              // slot allocated by sem_init
+  int value;             // current count
+  struct spinlock lk;    // protects value; sleep() releases it while blocked
+  int waiters;           // number of processes blocked on this semaphore
+  int owner[NPROC];      // per-proc hold count (Assignment 7 Q3 deadlock aid)
+};
+
+static struct semaphore sems[NSEM];
+
+int
+sem_init_id(int id, int value)
+{
+  struct semaphore *s;
+
+  if(id < 0 || id >= NSEM || value < 0)
+    return -1;
+  s = &sems[id];
+  acquire(&s->lk);
+  if(s->used){           // re-initialising a live semaphore is a caller bug
+    release(&s->lk);
+    return -1;
+  }
+  s->used = 1;
+  s->value = value;
+  s->waiters = 0;
+  memset(s->owner, 0, sizeof(s->owner));
+  release(&s->lk);
+  return 0;
+}
+
+int
+sem_wait_id(int id)
+{
+  struct semaphore *s;
+  struct proc *p;
+
+  if(id < 0 || id >= NSEM)
+    return -1;
+  s = &sems[id];
+  p = myproc();
+  acquire(&s->lk);
+  if(!s->used){
+    release(&s->lk);
+    return -1;
+  }
+  // Block while the count is exhausted. sleep() releases s->lk while
+  // blocked and re-acquires it before returning, so the value test stays
+  // atomic. proc->killed breaks the loop if the process is killed.
+  while(s->used && s->value == 0 && !(p && p->killed)){
+    s->waiters++;
+    if(p)
+      p->waiting_on = id;   // Assignment 7 Q3: wait-for bookkeeping
+    sleep(s, &s->lk);
+    s->waiters--;
+  }
+  if(p)
+    p->waiting_on = -1;
+  if(!s->used){             // sem_destroy() woke us: fail, don't re-sleep
+    release(&s->lk);
+    return -1;
+  }
+  if(p && p->killed){
+    release(&s->lk);
+    return -1;
+  }
+  s->value--;
+  if(p)
+    s->owner[p - ptable.proc]++;
+  release(&s->lk);
+  return 0;
+}
+
+int
+sem_signal_id(int id)
+{
+  struct semaphore *s;
+  struct proc *p;
+
+  if(id < 0 || id >= NSEM)
+    return -1;
+  s = &sems[id];
+  p = myproc();
+  acquire(&s->lk);
+  if(!s->used){
+    release(&s->lk);
+    return -1;
+  }
+  if(p && s->owner[p - ptable.proc] > 0)
+    s->owner[p - ptable.proc]--;
+  s->value++;
+  if(s->waiters > 0)
+    wakeup(s);          // wakes every sleeper; they re-check value under lk
+  release(&s->lk);
+  return 0;
+}
+
+int
+sem_destroy_id(int id)
+{
+  struct semaphore *s;
+
+  if(id < 0 || id >= NSEM)
+    return -1;
+  s = &sems[id];
+  acquire(&s->lk);
+  if(!s->used){
+    release(&s->lk);
+    return -1;
+  }
+  s->used = 0;
+  // Wake everyone blocked on the destroyed semaphore; they see used == 0
+  // on re-check and fail instead of sleeping forever.
+  wakeup(s);
+  release(&s->lk);
+  return 0;
+}
+
+----- sysproc.c - sys_sem_init() -----
+int
+sys_sem_init(void)
+{
+  int id, value;
+  if(sem_arg_id_value(&id, &value, 1) < 0)
+    return -1;
+  return sem_init_id(id, value);
+}
+
+----- sysproc.c - sys_sem_wait() -----
+int
+sys_sem_wait(void)
+{
+  int id;
+  if(sem_arg_id_value(&id, 0, 0) < 0)
+    return -1;
+  return sem_wait_id(id);
+}
+
+----- sysproc.c - sys_sem_signal() -----
+int
+sys_sem_signal(void)
+{
+  int id;
+  if(sem_arg_id_value(&id, 0, 0) < 0)
+    return -1;
+  return sem_signal_id(id);
+}
+
+----- synctest.c - complete test program -----
+// Assignment 7, Question 2 test: kernel counting semaphores.
+// Exercises sem_init/sem_wait/sem_signal/sem_destroy over the fixed
+// 10-semaphore array: binary mutex across a fork, and a counting
+// semaphore limiting two children to one-at-a-time access.
+// Expected: shared counter exact, invalid ids rejected, destroy works.
+#include "types.h"
+#include "stat.h"
+#include "user.h"
+
+#define SEM_MX 2
+#define ITER 3000
+
+int
+main(void)
+{
+  int *sh = (int*)shm_get();
+  if((int)sh < 0){ printf(1, "synctest: shm_get failed\n"); exit(); }
+  *sh = 0;
+
+  if(sem_init(SEM_MX, 1) < 0){ printf(1, "synctest: init failed\n"); exit(); }
+  if(sem_init(99, 1) == 0){    // out-of-range id must fail
+    printf(1, "synctest: FAIL accepted bad id\n"); exit();
+  }
+  if(fork() == 0){
+    sh = (int*)shm_get();
+    for(int i = 0; i < ITER; i++){
+      sem_wait(SEM_MX); (*sh)++; sem_signal(SEM_MX);
+    }
+    exit();
+  }
+  for(int i = 0; i < ITER; i++){
+    sem_wait(SEM_MX); (*sh)++; sem_signal(SEM_MX);
+  }
+  wait();
+  int ok = (*sh == 2 * ITER);
+  if(sem_destroy(SEM_MX) < 0) ok = 0;
+  printf(1, "synctest: counter=%d %s\n", *sh, ok ? "PASS" : "FAIL");
+  exit();
+}
 
 IN THE LAB: WHAT TO DO AND WHAT TO SHOW
 ---------------------------------------

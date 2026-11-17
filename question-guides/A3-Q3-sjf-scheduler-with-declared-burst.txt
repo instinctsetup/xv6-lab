@@ -18,6 +18,69 @@ EXPECTED OUTPUT
 ---------------
 Completion in ascending burst order (verified: burst 20, 40, 60).
 
+CODE (verbatim from the repo)
+---------------------------
+
+----- proc.h - struct proc field -----
+  uint ctime;                  // A3 Q1/A4 Q2: creation time in ticks
+  int burst_time;              // A3 Q3/A4: estimated burst, -1 = unset
+  int remaining_time;          // A4 Q1 (SRTF): remaining estimated burst
+
+----- proc.c - key(), SJF case -----
+// ... inside key(): switch(SCHED) ...
+  case SCHED_SJF:                     // A3 Q3: shortest estimated burst;
+    // PDF: processes with no burst set are treated as lowest priority.
+    return (uint)(p->burst_time < 0 ? 0x7fffffff : p->burst_time);
+
+----- sysproc.c - sys_set_burst() -----
+// ---- Assignment 3 Q3 / Assignment 4: set_burst(int pid, int bt) ----
+int
+sys_set_burst(void)
+{
+  int pid, bt;
+  if(argint(0, &pid) < 0 || argint(1, &bt) < 0 || bt <= 0)
+    return -1;
+  return set_proc_field(pid, bt, 0);
+}
+
+----- sjftest.c - complete test program -----
+// Assignment 3, Question 3 test: SJF (shortest job first, estimated burst).
+// Build and run with: make qemu SCHED=SJF CPUS=1
+// The parent declares each child's burst by pid while the children sleep,
+// so all three jobs are runnable with known bursts before any runs.
+// Expected: completion order is short(20), medium(40), long(60) even
+// though the long job was created first.
+#include "types.h"
+#include "stat.h"
+#include "user.h"
+#include "pinfo.h"
+
+static void work(int me, int burst)
+{
+  volatile int i, x = 0;
+  sleep(20);                     // let the parent declare all bursts first
+  for(i = 0; i < burst * 1000000; i++) x += i;
+  struct pinfo pi;
+  getpinfo(&pi);
+  printf(1, "sjf: child %d done (burst %d, rtime %d)\n", me, burst, pi.rtime);
+  exit();
+}
+
+int
+main(void)
+{
+  int p0, p1, p2;
+  if((p0 = fork()) == 0) work(0, 60);   // long, created first
+  set_burst(p0, 60);
+  if((p1 = fork()) == 0) work(1, 20);   // short
+  set_burst(p1, 20);
+  if((p2 = fork()) == 0) work(2, 40);   // medium
+  set_burst(p2, 40);
+  wait(); wait(); wait();
+  printf(1, "sjf: test complete\n");
+  exit();
+}
+
 IN THE LAB: WHAT TO DO AND WHAT TO SHOW
 ---------------------------------------
 Check how key() maps an unset burst (-1) to the largest key so it schedules last. Run sjftest, screenshot.

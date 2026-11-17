@@ -12,11 +12,243 @@ At the xv6 shell: deadlock
 
 WHICH FILES TO OPEN / SHOW
 --------------------------
-proc.c (waiting_on bookkeeping), support/sem.c (owner and hold counts), deadlock.c
+proc.c (waiting_on bookkeeping), sem.c (owner and hold counts), deadlock.c
 
 EXPECTED OUTPUT
 ---------------
 Detection names exactly the stuck processes (the related detector verified: P1 and P2), the safe case passes, and the unsafe request rolls back.
+
+CODE (verbatim from the repo)
+---------------------------
+
+----- proc.c - waiting_on bookkeeping -----
+  p->leader = p;                       // a normal process leads its own group
+  p->nthreads = 0;
+  p->waiting_on = -1;                  // A7 Q3
+  p->pgfaults = 0;                     // A9 Q2
+
+
+----- sem.c - owner and hold counts (whole file) -----
+// sem.c - Kernel counting semaphores.
+//
+// Assignment 7, Question 2: counting semaphores on top of xv6's
+// sleep()/wakeup(), with the exact syscall surface the assignment asks for
+// (sem_init / sem_wait / sem_signal over a fixed array of 10 semaphores).
+// Assignment 5 (Questions 2-4) reuses the same semaphores for the
+// producer-consumer, readers-writers and dining-philosophers programs.
+//
+// sem_destroy() is an extension beyond the assignment text: it frees a
+// slot and wakes any waiters so a stuck program fails loudly instead of
+// hanging forever.
+
+#include "types.h"
+#include "defs.h"
+#include "param.h"
+#include "spinlock.h"
+#include "mmu.h"
+#include "proc.h"
+
+// ptable lives in proc.c; needed to index per-process hold counts.
+extern struct {
+  struct spinlock lock;
+  struct proc proc[NPROC];
+} ptable;
+
+#define NSEM 10   // assignment 7 Q2(c): fixed-size array of semaphores
+
+struct semaphore {
+  int used;              // slot allocated by sem_init
+  int value;             // current count
+  struct spinlock lk;    // protects value; sleep() releases it while blocked
+  int waiters;           // number of processes blocked on this semaphore
+  int owner[NPROC];      // per-proc hold count (Assignment 7 Q3 deadlock aid)
+};
+
+static struct semaphore sems[NSEM];
+
+int
+sem_init_id(int id, int value)
+{
+  struct semaphore *s;
+
+  if(id < 0 || id >= NSEM || value < 0)
+    return -1;
+  s = &sems[id];
+  acquire(&s->lk);
+  if(s->used){           // re-initialising a live semaphore is a caller bug
+    release(&s->lk);
+    return -1;
+  }
+  s->used = 1;
+  s->value = value;
+  s->waiters = 0;
+  memset(s->owner, 0, sizeof(s->owner));
+  release(&s->lk);
+  return 0;
+}
+
+int
+sem_wait_id(int id)
+{
+  struct semaphore *s;
+  struct proc *p;
+
+  if(id < 0 || id >= NSEM)
+    return -1;
+  s = &sems[id];
+  p = myproc();
+  acquire(&s->lk);
+  if(!s->used){
+    release(&s->lk);
+    return -1;
+  }
+  // Block while the count is exhausted. sleep() releases s->lk while
+  // blocked and re-acquires it before returning, so the value test stays
+  // atomic. proc->killed breaks the loop if the process is killed.
+  while(s->used && s->value == 0 && !(p && p->killed)){
+    s->waiters++;
+    if(p)
+      p->waiting_on = id;   // Assignment 7 Q3: wait-for bookkeeping
+    sleep(s, &s->lk);
+    s->waiters--;
+  }
+  if(p)
+    p->waiting_on = -1;
+  if(!s->used){             // sem_destroy() woke us: fail, don't re-sleep
+    release(&s->lk);
+    return -1;
+  }
+  if(p && p->killed){
+    release(&s->lk);
+    return -1;
+  }
+  s->value--;
+  if(p)
+    s->owner[p - ptable.proc]++;
+  release(&s->lk);
+  return 0;
+}
+
+int
+sem_signal_id(int id)
+{
+  struct semaphore *s;
+  struct proc *p;
+
+  if(id < 0 || id >= NSEM)
+    return -1;
+  s = &sems[id];
+  p = myproc();
+  acquire(&s->lk);
+  if(!s->used){
+    release(&s->lk);
+    return -1;
+  }
+  if(p && s->owner[p - ptable.proc] > 0)
+    s->owner[p - ptable.proc]--;
+  s->value++;
+  if(s->waiters > 0)
+    wakeup(s);          // wakes every sleeper; they re-check value under lk
+  release(&s->lk);
+  return 0;
+}
+
+int
+sem_destroy_id(int id)
+{
+  struct semaphore *s;
+
+  if(id < 0 || id >= NSEM)
+    return -1;
+  s = &sems[id];
+  acquire(&s->lk);
+  if(!s->used){
+    release(&s->lk);
+    return -1;
+  }
+  s->used = 0;
+  // Wake everyone blocked on the destroyed semaphore; they see used == 0
+  // on re-check and fail instead of sleeping forever.
+  wakeup(s);
+  release(&s->lk);
+  return 0;
+}
+
+----- deadlock.c - complete test program -----
+// Assignment 7, Question 3 test: kernel deadlock detection support.
+// The kernel records which semaphore each process is blocked on
+// (proc->waiting_on, set by sem_wait). This program builds a real
+// two-process AB-BA deadlock between threads, lets the parent observe
+// both waiters via their pids, then recovers with sem_destroy(), which
+// wakes the blocked threads so the group can exit.
+// Expected output: both threads reported blocked on each other's
+// semaphore, then "recovered".
+#include "types.h"
+#include "stat.h"
+#include "user.h"
+
+#define SEM_X 6
+#define SEM_Y 7
+
+static int *status;   // shared via clone()'s shared address space
+
+static void
+tA(void *arg)
+{
+  sem_wait(SEM_X);
+  status[0] = 1;               // "I hold X, want Y"
+  sleep(5);
+  if(sem_wait(SEM_Y) < 0)      // blocks while B holds Y: deadlock
+    exit();                    // recovered via sem_destroy
+  status[0] = 2;
+  sem_signal(SEM_Y);
+  sem_signal(SEM_X);
+  exit();
+}
+
+static void
+tB(void *arg)
+{
+  sem_wait(SEM_Y);
+  status[1] = 1;               // "I hold Y, want X"
+  sleep(5);
+  if(sem_wait(SEM_X) < 0)      // blocks while A holds X: deadlock
+    exit();
+  status[1] = 2;
+  sem_signal(SEM_X);
+  sem_signal(SEM_Y);
+  exit();
+}
+
+int
+main(void)
+{
+  status = (int*)shm_get();
+  if((int)status < 0){ printf(1, "deadlock: shm_get failed\n"); exit(); }
+  status[0] = status[1] = 0;
+  sem_init(SEM_X, 1);
+  sem_init(SEM_Y, 1);
+
+  char *stA = malloc(4096);
+  char *stB = malloc(4096);
+  int a = clone(tA, 0, stA);
+  int b = clone(tB, 0, stB);
+  if(a < 0 || b < 0){ printf(1, "deadlock: clone failed\n"); exit(); }
+  sleep(20);                   // let both threads reach their second wait
+  printf(1, "deadlock: thread states [%d %d] (1 = deadlocked)\n",
+         status[0], status[1]);
+  if(status[0] == 1 && status[1] == 1){
+    printf(1, "deadlock: AB-BA cycle detected; recovering by "
+             "destroying both semaphores\n");
+    sem_destroy(SEM_X);        // wakes the blocked threads with an error
+    sem_destroy(SEM_Y);
+  }
+  // sem_destroy woke both threads with an error; they exit on their own.
+  join();
+  join();
+  printf(1, "deadlock: recovered and reaped - test complete\n");
+  exit();
+}
 
 IN THE LAB: WHAT TO DO AND WHAT TO SHOW
 ---------------------------------------

@@ -12,11 +12,135 @@ At the xv6 shell: peterson
 
 WHICH FILES TO OPEN / SHOW
 --------------------------
-support/shm.c (shm_get syscall), peterson.c (the flag/turn protocol)
+shm.c (shm_get syscall), peterson.c (the flag/turn protocol)
 
 EXPECTED OUTPUT
 ---------------
 counter = 20000, exactly as expected, with no interleaved critical sections (verified).
+
+CODE (verbatim from the repo)
+---------------------------
+
+----- shm.c - kernel shared page (whole file) -----
+// shm.c - Assignment 5: one kernel-owned page shared between address spaces.
+//
+// The Assignment 5 questions (Peterson, producer-consumer, readers-writers,
+// dining philosophers) need shared memory, which stock xv6 lacks because
+// fork() copies the address space. shm_get() maps ONE kernel-owned frame
+// into the caller's page table and returns its user virtual address.
+// Parent and child each call shm_get() after fork() and thereby see the
+// same physical frame.
+//
+// Simplifications, documented per the assignment's "document and justify"
+// requirement:
+//  - A single global page (4 KB) is enough for every test program.
+//  - fork() copies the mapping as a private page too; the child must call
+//    shm_get() itself and use that address, which every test program does.
+//  - The frame is never freed (kernel-owned for the life of the boot).
+
+#include "types.h"
+#include "defs.h"
+#include "param.h"
+#include "memlayout.h"
+#include "mmu.h"
+#include "proc.h"
+#include "spinlock.h"
+#include "shm.h"
+
+static struct spinlock shmlock;
+static char *shm_frame = 0;    // kernel virtual address of the shared frame
+static int shmlock_ready = 0;
+
+int
+shm_get(void)
+{
+  struct proc *p = myproc();
+  uint va;
+
+  if(p == 0)
+    return -1;
+
+  // Lazily allocate the shared frame exactly once.
+  if(!shmlock_ready){
+    initlock(&shmlock, "shm");
+    shmlock_ready = 1;
+  }
+  acquire(&shmlock);
+  if(shm_frame == 0){
+    shm_frame = kalloc();
+    if(shm_frame == 0){
+      release(&shmlock);
+      return -1;
+    }
+    memset(shm_frame, 0, PGSIZE);
+  }
+  release(&shmlock);
+
+  // Map the frame at a FIXED virtual address just below KERNBASE,
+  // deliberately OUTSIDE [0, sz): fork() does not copy it (the child calls
+  // shm_get() itself and gets the same frame), and freevm() is taught in
+  // vm.c to skip it, so the kernel-owned frame is never returned to the
+  // allocator while still mapped - that aliasing bug corrupted memory.
+  va = SHM_VA;
+  if(uvmpresent(p->pgdir, va))
+    return (int)va;     // already mapped in this address space
+  if(mappages(p->pgdir, (char*)va, PGSIZE, V2P(shm_frame), PTE_W|PTE_U) < 0)
+    return -1;
+  return (int)va;
+}
+
+----- peterson.c - complete test program -----
+// Assignment 5, Question 1: Peterson's algorithm for two processes.
+// Uses shm_get() for the shared flag[2]/turn variables (stock xv6 has no
+// shared memory across fork, so the kernel provides one shared frame).
+// Expected: the shared counter ends at exactly 2 * ITER; any race shows
+// up as a smaller total.
+#include "types.h"
+#include "stat.h"
+#include "user.h"
+
+#define ITER 10000
+
+struct shared {
+  int flag[2];
+  int turn;
+  int counter;
+};
+
+int
+main(void)
+{
+  struct shared *sh;
+  int addr = shm_get();
+  if(addr < 0){ printf(1, "peterson: shm_get failed\n"); exit(); }
+  sh = (struct shared*)addr;
+  sh->flag[0] = sh->flag[1] = sh->turn = sh->counter = 0;
+
+  int pid = fork();
+  int me = (pid == 0) ? 1 : 0;
+  int other = 1 - me;
+  if(pid == 0){
+    int caddr = shm_get();      // child maps the SAME frame
+    if(caddr < 0){ printf(1, "peterson: child shm_get failed\n"); exit(); }
+    sh = (struct shared*)caddr;
+  }
+
+  for(int i = 0; i < ITER; i++){
+    sh->flag[me] = 1;
+    sh->turn = other;
+    while(sh->flag[other] && sh->turn == other)
+      ;                          // spin
+    sh->counter++;               // critical section
+    sh->flag[me] = 0;
+  }
+
+  if(pid > 0){
+    wait();
+    printf(1, "peterson: counter=%d expected=%d %s\n", sh->counter,
+           2 * ITER, sh->counter == 2 * ITER ? "PASS" : "FAIL");
+  }
+  exit();
+}
 
 IN THE LAB: WHAT TO DO AND WHAT TO SHOW
 ---------------------------------------

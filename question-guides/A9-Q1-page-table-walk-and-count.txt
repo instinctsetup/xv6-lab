@@ -18,6 +18,87 @@ EXPECTED OUTPUT
 ---------------
 Exactly four new pages appear after sbrk(4 * 4096), with the totals printed (verified in the combined tree).
 
+CODE (verbatim from the repo)
+---------------------------
+
+----- vm.c - vmprint(), shared with A8 Q3 -----
+// Assignment 8 Q3 / Assignment 9 Q1: print the page table of the calling
+// process as a two-level dump. For every present user PDE, print its
+// index, the page table's physical address and flags; under it, indented,
+// every present PTE with its VA, frame and flags. Pages mapped with
+// PTE_U clear (the exec() stack guard page) are shown marked GUARD.
+// Ends with the summary lines both questions ask for: total valid user
+// pages, page-table pages used, and how many kernel PDE entries exist.
+// Returns the number of valid user pages (the A9 Q1 test uses it).
+int
+vmprint(pde_t *pgdir)
+{
+  int i, j, n = 0, guard = 0, kentries = 0, ptpages = 0;
+  cprintf("page table dump:\n");
+  for(i = 0; i < NPDENTRIES; i++){
+    pde_t pde = pgdir[i];
+    pte_t *pgtab;
+    if((pde & PTE_P) == 0)
+      continue;
+    if(i >= PDX(KERNBASE)){
+      kentries++;              // kernel half of the address space
+      continue;
+    }
+    cprintf("PDE [%d] -> pt at 0x%x [%s%s]\n", i, PTE_ADDR(pde),
+            (pde & PTE_W) ? "W" : "-", (pde & PTE_U) ? "U" : "-");
+    ptpages++;
+    pgtab = (pte_t*)P2V(PTE_ADDR(pde));
+    for(j = 0; j < NPTENTRIES; j++){
+      pte_t pte = pgtab[j];
+      uint va;
+      if((pte & PTE_P) == 0)
+        continue;
+      va = (i << PDXSHIFT) | (j << PTXSHIFT);
+      if((pte & PTE_U) == 0){
+        cprintf("  .. PTE [%d] va 0x%x -> pa 0x%x [GUARD: PTE_U clear]\n",
+                j, va, PTE_ADDR(pte));
+        guard++;
+        continue;
+      }
+      cprintf("  .. PTE [%d] va 0x%x -> pa 0x%x [%s%s]\n",
+              j, va, PTE_ADDR(pte),
+              (pte & PTE_W) ? "W" : "-", "U");
+      n++;
+    }
+  }
+  cprintf("page table dump: %d user pages, %d guard pages, %d page-table "
+          "pages, %d kernel PDE entries\n", n, guard, ptpages, kentries);
+  return n;
+}
+
+----- pttest.c - complete test program -----
+// Assignment 9 Q1: test program for the vmprint() system call.
+#include "types.h"
+#include "stat.h"
+#include "user.h"
+
+int
+main(int argc, char *argv[])
+{
+  int before, after;
+
+  printf(1, "=== vmprint at start-up ===\n");
+  before = vmprint();
+
+  sbrk(4 * 4096);
+
+  printf(1, "=== vmprint after sbrk(4 * 4096) ===\n");
+  after = vmprint();
+
+  printf(1, "valid user pages before: %d, after: %d, new: %d\n",
+         before, after, after - before);
+  if(after - before == 4)
+    printf(1, "PASS: exactly four new pages appeared\n");
+  else
+    printf(1, "FAIL: expected 4 new pages\n");
+  exit();
+}
+
 IN THE LAB: WHAT TO DO AND WHAT TO SHOW
 ---------------------------------------
 Same walk as A8 Q3 with a different summary; run pttest and screenshot before and after the sbrk.
